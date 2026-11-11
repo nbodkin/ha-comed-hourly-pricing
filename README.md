@@ -1,0 +1,80 @@
+# ComEd Hourly Pricing (custom integration for Home Assistant)
+
+A replacement for Home Assistant's built-in
+[ComEd Hourly Pricing](https://www.home-assistant.io/integrations/comed_hourly_pricing)
+integration. It uses the same domain and YAML, so your existing config and
+entity IDs keep working, and fixes how it handles errors:
+
+| Built-in integration | This one |
+| --- | --- |
+| When ComEd's API fails, the last price stays on screen and automations act on it. | Sensors go **unavailable** until a fresh price arrives. |
+| An empty or malformed response crashes the update with a traceback. | Every bad response (HTML error page, empty list, `null` or `NaN` price, HTTP errors, timeouts) is handled. |
+| No check on whether ComEd is still publishing. | A newest price older than 30 minutes counts as an outage. |
+| Logs an error every 5 minutes during an outage. | Logs once when the feed goes down and once when it recovers. |
+| Each sensor makes its own request. | One request per feed, shared by all sensors on it. |
+| Prices only in ¢/kWh, which the Energy dashboard reads as **dollars** (costs 100× too high). | Optional `price_unit: dollars` for the Energy dashboard. |
+| No long-term statistics; can't be renamed in the UI. | `state_class: measurement` and a unique ID. |
+
+Each sensor also gets a `price_time` attribute: when ComEd published the price.
+
+Tested on Home Assistant 2026.8.3, 2026.10.4 and 2026.11.1.
+
+## Install
+
+### HACS
+
+1. HACS → ⋮ → **Custom repositories** → add this repo's URL, category **Integration**.
+2. Install **ComEd Hourly Pricing** and restart Home Assistant.
+
+### Manual
+
+Copy `custom_components/comed_hourly_pricing/` into your Home Assistant
+`config/custom_components/` folder and restart.
+
+After restarting, Home Assistant logs a warning that a custom integration is
+overriding a built-in one. That's expected.
+
+## Configure
+
+Same YAML as the built-in integration. `price_unit` is new.
+
+```yaml
+sensor:
+  - platform: comed_hourly_pricing
+    monitored_feeds:
+      - type: five_minute
+      - type: current_hour_average
+      # For the Energy dashboard, which needs whole dollars:
+      - type: current_hour_average
+        name: ComEd Hourly Price USD
+        price_unit: dollars
+        offset: 8.5
+```
+
+| Option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `type` | yes | | `five_minute` or `current_hour_average` |
+| `name` | no | `ComEd 5 Minute Price` / `ComEd Current Hour Average Price` | Sensor name. Renaming it in YAML creates a new entity; to rename without that, use the UI. |
+| `offset` | no | `0` | Added to every price, **in ¢/kWh even when `price_unit` is `dollars`**. ComEd's feed is the supply price only, so this is where delivery charges and other per-kWh fees go. Must be between -100 and 100. |
+| `price_unit` | no | `cents` | `cents` reports ¢/kWh like the built-in integration. `dollars` reports USD/kWh. |
+
+### Energy dashboard
+
+Use a sensor with `price_unit: dollars` as the price entity.
+The Energy dashboard ignores the currency in a price's unit and treats the number as your
+system currency per kWh, so a ¢/kWh sensor makes every cost 100× too high.
+Keep your existing cents sensors for automations if you like. Each sensor is independent.
+
+## Remove
+
+Delete `custom_components/comed_hourly_pricing/` (or uninstall in HACS) and
+restart. Home Assistant goes back to the built-in integration with the same YAML,
+except that `price_unit` must be removed because the built-in one rejects it.
+
+## Development
+
+```bash
+python3.14 -m venv .venv && . .venv/bin/activate
+pip install -r requirements_test.txt
+pytest
+```
