@@ -1,5 +1,6 @@
 """Tests for the ComEd Hourly Pricing sensors."""
 
+import asyncio
 from datetime import timedelta
 import json
 import logging
@@ -21,7 +22,9 @@ import pytest
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 from pytest_homeassistant_custom_component.test_util.aiohttp import (
     AiohttpClientMocker,
+    AiohttpClientMockResponse,
 )
+from yarl import URL
 
 from custom_components.comed_hourly_pricing.coordinator import API_URL
 
@@ -169,6 +172,56 @@ async def test_one_request_per_feed(
 
     await next_poll(hass, freezer)
     assert healthy_api.call_count == 4
+
+
+async def test_one_request_per_feed_across_platform_entries(
+    hass: HomeAssistant,
+    healthy_api: AiohttpClientMocker,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Sensors in separate `platform:` entries share a feed's request too."""
+    assert await async_setup_component(
+        hass,
+        "sensor",
+        {
+            "sensor": [
+                {"platform": DOMAIN, "monitored_feeds": [FIVE_MINUTE]},
+                {
+                    "platform": DOMAIN,
+                    "monitored_feeds": [{**FIVE_MINUTE, "price_unit": "dollars"}],
+                },
+            ]
+        },
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(FIVE_MINUTE_ENTITY).state == "3.7"
+    assert hass.states.get("sensor.comed_5_minute_price_usd").state == "0.037"
+    assert healthy_api.call_count == 1
+
+    await next_poll(hass, freezer)
+    assert healthy_api.call_count == 2
+
+
+async def test_feeds_start_at_the_same_time(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Both feeds' first requests run together, so a slow API delays startup once."""
+    both_started = asyncio.Barrier(2)
+
+    async def slow_response(
+        method: str, url: URL, data: Any
+    ) -> AiohttpClientMockResponse:
+        # Times out unless the other feed's request starts meanwhile.
+        async with asyncio.timeout(5):
+            await both_started.wait()
+        return AiohttpClientMockResponse(method, url, text=feed(4.0))
+
+    aioclient_mock.get(FIVE_MINUTE_URL, side_effect=slow_response)
+    aioclient_mock.get(HOUR_AVERAGE_URL, side_effect=slow_response)
+    await setup_sensors(hass, FIVE_MINUTE, HOUR_AVERAGE)
+
+    assert hass.states.get(FIVE_MINUTE_ENTITY).state == "4.0"
+    assert hass.states.get(HOUR_AVERAGE_ENTITY).state == "4.0"
 
 
 async def test_newest_price_wins(

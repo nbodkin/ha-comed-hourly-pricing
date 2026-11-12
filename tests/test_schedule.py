@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta
 import json
+from typing import Any
 
 import aiohttp
 from freezegun.api import FrozenDateTimeFactory
@@ -12,7 +13,9 @@ import pytest
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 from pytest_homeassistant_custom_component.test_util.aiohttp import (
     AiohttpClientMocker,
+    AiohttpClientMockResponse,
 )
+from yarl import URL
 
 from custom_components.comed_hourly_pricing.coordinator import (
     API_URL,
@@ -28,8 +31,11 @@ HOUR_AVERAGE_ENTITY = "sensor.comed_current_hour_average_price"
 
 
 def utc(text: str) -> datetime:
-    """Parse an ISO time as UTC."""
-    return datetime.fromisoformat(text)
+    """Parse an ISO time in UTC, like 2026-11-11T12:00:00Z."""
+    parsed = datetime.fromisoformat(text)
+    if parsed.utcoffset() != timedelta(0):
+        raise ValueError(f"not a UTC time: {text}")
+    return parsed
 
 
 def price_at(stamp: str, price: float) -> str:
@@ -150,6 +156,33 @@ async def test_checks_right_after_next_price_is_posted(
 
     aioclient_mock.clear_requests()
     aioclient_mock.get(HOUR_AVERAGE_URL, text=price_at("2026-11-11T23:35:00Z", 4.0))
+    await advance_to(hass, freezer, due + timedelta(seconds=1))
+    assert aioclient_mock.call_count == 1
+    assert hass.states.get(HOUR_AVERAGE_ENTITY).state == "4.0"
+
+
+async def test_slow_response_doesnt_delay_next_check(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """The next check is timed from when the response arrives."""
+    freezer.move_to("2026-11-11T23:37:00Z")
+
+    async def slow_response(
+        method: str, url: URL, data: Any
+    ) -> AiohttpClientMockResponse:
+        freezer.tick(timedelta(seconds=20))
+        return AiohttpClientMockResponse(
+            method, url, text=price_at("2026-11-11T23:30:00Z", 5.2)
+        )
+
+    aioclient_mock.get(HOUR_AVERAGE_URL, side_effect=slow_response)
+    await setup_feed(hass, "current_hour_average")
+
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(HOUR_AVERAGE_URL, text=price_at("2026-11-11T23:35:00Z", 4.0))
+    due = utc("2026-11-11T23:35:00Z") + POSTING_DELAY
     await advance_to(hass, freezer, due + timedelta(seconds=1))
     assert aioclient_mock.call_count == 1
     assert hass.states.get(HOUR_AVERAGE_ENTITY).state == "4.0"

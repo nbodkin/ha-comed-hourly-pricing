@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 import logging
 import math
+from zoneinfo import ZoneInfo
 
 import aiohttp
 from homeassistant.core import HomeAssistant
@@ -67,16 +68,19 @@ class ComedPriceCoordinator(DataUpdateCoordinator[PriceReading]):
         )
         self._session = session
         self._api_type = api_type
+        self._chicago: ZoneInfo | None = None
 
     async def _async_update_data(self) -> PriceReading:
         """Fetch the newest price, or raise UpdateFailed."""
         # Used if this fetch fails; replaced below if it succeeds.
         self.update_interval = PUBLISH_INTERVAL
 
-        now = dt_util.utcnow()
         params = {"type": self._api_type}
         if self._api_type == "5minutefeed":
-            local = now.astimezone(dt_util.get_time_zone("America/Chicago"))
+            # Loading a time zone can read from disk, so it's done once and kept.
+            if self._chicago is None:
+                self._chicago = await dt_util.async_get_time_zone("America/Chicago")
+            local = dt_util.now(self._chicago)
             params["datestart"] = f"{local - RANGE_BEFORE_NOW:%Y%m%d%H%M}"
             params["dateend"] = f"{local + RANGE_AFTER_NOW:%Y%m%d%H%M}"
 
@@ -91,6 +95,8 @@ class ComedPriceCoordinator(DataUpdateCoordinator[PriceReading]):
             raise UpdateFailed(f"can't reach the ComEd API: {err!r}") from err
 
         reading = parse_newest_price(body)
+        # Read after the response, so a slow one doesn't push back the next check.
+        now = dt_util.utcnow()
         if now - reading.time > MAX_PRICE_AGE:
             raise UpdateFailed(
                 f"the newest ComEd price is from {reading.time}; "

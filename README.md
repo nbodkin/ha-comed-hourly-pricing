@@ -63,7 +63,7 @@ sensor:
     monitored_feeds:
       - type: five_minute
       - type: current_hour_average
-      # For the Energy dashboard, which needs whole dollars:
+      # For the Energy dashboard, which needs dollars:
       - type: current_hour_average
         name: ComEd Hourly Price USD
         price_unit: dollars
@@ -140,7 +140,7 @@ pytest
 ruff check . && ruff format --check .
 ```
 
-GitHub Actions run the same checks on every push and pull request, plus Home
+GitHub Actions run the same checks on pull requests and pushes to `main`, plus Home
 Assistant's `hassfest` and the HACS validator. Tests run against both the oldest
 supported Home Assistant (2026.8) and the newest the test plugin supports.
 

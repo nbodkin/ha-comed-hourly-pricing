@@ -1,5 +1,6 @@
 """Sensors for ComEd Hourly Pricing."""
 
+import asyncio
 import logging
 
 # Home Assistant 2026.10 replaced voluptuous with probatio but still answers to
@@ -17,11 +18,19 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import slugify
+from homeassistant.util.hass_dict import HassKey
 import voluptuous as vol
 
 from .coordinator import ComedPriceCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+
+# Each feed's coordinator, as the task that creates it and fetches the first
+# price. Kept here so sensors in separate `platform: comed_hourly_pricing`
+# entries share one request per feed too.
+DATA_FEEDS: HassKey[dict[str, asyncio.Task[ComedPriceCoordinator]]] = HassKey(
+    "comed_hourly_pricing"
+)
 
 CONF_MONITORED_FEEDS = "monitored_feeds"
 CONF_PRICE_UNIT = "price_unit"
@@ -59,19 +68,18 @@ async def async_setup_platform(
     discovery_info: DiscoveryInfoType | None = None,
 ) -> None:
     """Set up ComEd Hourly Pricing sensors from YAML."""
-    session = async_get_clientsession(hass)
-    coordinators: dict[str, ComedPriceCoordinator] = {}  # One per feed.
+    # Start every feed before waiting on any, so a slow API delays startup once.
+    starts = hass.data.setdefault(DATA_FEEDS, {})
+    for sensor_config in config[CONF_MONITORED_FEEDS]:
+        feed = sensor_config[CONF_TYPE]
+        if feed not in starts:
+            starts[feed] = hass.async_create_task(_async_start_feed(hass, feed))
+
     entities: dict[str, ComedHourlyPricingSensor] = {}  # By unique ID.
     for sensor_config in config[CONF_MONITORED_FEEDS]:
         feed = sensor_config[CONF_TYPE]
-        api_type, feed_name = FEEDS[feed]
-        if feed not in coordinators:
-            coordinator = ComedPriceCoordinator(hass, session, api_type, feed_name)
-            coordinators[feed] = coordinator
-            # Without a config entry, polling doesn't stop at shutdown unless asked.
-            await coordinator.async_register_shutdown()
-            # If this fails, the sensors start out unavailable and it keeps trying.
-            await coordinator.async_refresh()
+        feed_name = FEEDS[feed][1]
+        coordinator = await starts[feed]
         in_dollars = sensor_config[CONF_PRICE_UNIT] == "dollars"
         # A dollars sensor gets its own default name, so it can sit beside a
         # cents one on the same feed.
@@ -79,7 +87,7 @@ async def async_setup_platform(
             f"{feed_name} USD" if in_dollars else feed_name
         )
         sensor = ComedHourlyPricingSensor(
-            coordinators[feed], feed, name, sensor_config[CONF_OFFSET], in_dollars
+            coordinator, feed, name, sensor_config[CONF_OFFSET], in_dollars
         )
         # Home Assistant would drop it anyway, with a confusing error.
         if sensor.unique_id in entities:
@@ -91,6 +99,19 @@ async def async_setup_platform(
             continue
         entities[sensor.unique_id] = sensor
     async_add_entities(entities.values())
+
+
+async def _async_start_feed(hass: HomeAssistant, feed: str) -> ComedPriceCoordinator:
+    """Create a feed's coordinator and fetch its first price."""
+    api_type, feed_name = FEEDS[feed]
+    coordinator = ComedPriceCoordinator(
+        hass, async_get_clientsession(hass), api_type, feed_name
+    )
+    # Without a config entry, polling doesn't stop at shutdown unless asked.
+    await coordinator.async_register_shutdown()
+    # If this fails, the sensors start out unavailable and it keeps trying.
+    await coordinator.async_refresh()
+    return coordinator
 
 
 class ComedHourlyPricingSensor(CoordinatorEntity[ComedPriceCoordinator], SensorEntity):
