@@ -21,43 +21,27 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
 import pytest
-from pytest_homeassistant_custom_component.common import async_fire_time_changed
 from pytest_homeassistant_custom_component.test_util.aiohttp import (
     AiohttpClientMocker,
     AiohttpClientMockResponse,
 )
 from yarl import URL
 
-from custom_components.comed_hourly_pricing.coordinator import API_URL
-
-DOMAIN = "comed_hourly_pricing"
-
-FIVE_MINUTE_URL = f"{API_URL}?type=5minutefeed"
-HOUR_AVERAGE_URL = f"{API_URL}?type=currenthouraverage"
-FIVE_MINUTE_ENTITY = "sensor.comed_5_minute_price"
-HOUR_AVERAGE_ENTITY = "sensor.comed_current_hour_average_price"
-
-FIVE_MINUTE = {"type": "five_minute"}
-HOUR_AVERAGE = {"type": "current_hour_average"}
+from .common import (
+    DOMAIN,
+    FIVE_MINUTE,
+    FIVE_MINUTE_ENTITY,
+    FIVE_MINUTE_URL,
+    HOUR_AVERAGE,
+    HOUR_AVERAGE_ENTITY,
+    HOUR_AVERAGE_URL,
+    feed,
+    next_poll,
+    setup_sensors,
+)
 
 # What the real API sends for a request it doesn't understand: HTTP 200, HTML.
 SERVLET_ERROR_PAGE = "Servlet Feed 2.95-SGalertsSync"
-
-
-def feed(*prices: Any, newest_age: timedelta = timedelta(minutes=5)) -> str:
-    """Build an API response like the real one: newest first, 5 minutes apart."""
-    newest = dt_util.utcnow() - newest_age
-    return json.dumps(
-        [
-            {
-                "millisUTC": str(
-                    int((newest - timedelta(minutes=5 * i)).timestamp() * 1000)
-                ),
-                "price": str(price),
-            }
-            for i, price in enumerate(prices)
-        ]
-    )
 
 
 def cached_copy(age: timedelta) -> dict[str, Any]:
@@ -72,23 +56,6 @@ def cached_copy(age: timedelta) -> dict[str, Any]:
             "Age": str(int(age.total_seconds())),
         },
     }
-
-
-async def setup_sensors(hass: HomeAssistant, *sensors: dict[str, Any]) -> None:
-    """Set up the platform with the given monitored_feeds entries."""
-    assert await async_setup_component(
-        hass,
-        "sensor",
-        {"sensor": {"platform": DOMAIN, "monitored_feeds": list(sensors)}},
-    )
-    await hass.async_block_till_done()
-
-
-async def next_poll(hass: HomeAssistant, freezer: FrozenDateTimeFactory) -> None:
-    """Move time forward to the next scheduled fetch."""
-    freezer.tick(timedelta(minutes=6))
-    async_fire_time_changed(hass)
-    await hass.async_block_till_done()
 
 
 @pytest.fixture
@@ -198,7 +165,7 @@ async def test_missing_time_zone_fetches_whole_feed(
     """Without Chicago's time zone, the 5-minute feed is fetched without a range."""
     aioclient_mock.get(FIVE_MINUTE_URL, text=feed(3.7))
     with patch(
-        "custom_components.comed_hourly_pricing.sensor.dt_util.async_get_time_zone",
+        "custom_components.comed_hourly_pricing.coordinator.dt_util.async_get_time_zone",
         return_value=None,
     ) as get_time_zone:
         await setup_sensors(hass, FIVE_MINUTE)
