@@ -12,6 +12,8 @@ entity IDs keep working, and fixes how it handles errors:
 | No check on whether ComEd is still publishing. | A newest price older than 30 minutes counts as an outage. |
 | Logs an error every 5 minutes during an outage. | Logs once when the feed goes down and once when it recovers. |
 | Each sensor makes its own request. | One request per feed, shared by all sensors on it. |
+| Polls every 5 minutes from whenever Home Assistant started, so each new price shows up as much as 5 minutes after ComEd posts it. | Checks right after ComEd should post each new price. [Same number of requests](#how-often-it-checks), but prices show up right away. |
+| Downloads 24 hours of 5-minute prices (about 12 KB) on every poll. | Asks for just a few hours (about 1 KB). |
 | Prices only in ¢/kWh, which the Energy dashboard reads as **dollars** (costs 100× too high). | Optional `price_unit: dollars` for the Energy dashboard. |
 | No long-term statistics; can't be renamed in the UI. | `state_class: measurement` and a unique ID. |
 
@@ -64,6 +66,39 @@ Use a sensor with `price_unit: dollars` as the price entity.
 The Energy dashboard ignores the currency in a price's unit and treats the number as your
 system currency per kWh, so a ¢/kWh sensor makes every cost 100× too high.
 Keep your existing cents sensors for automations if you like. Each sensor is independent.
+
+## How often it checks
+
+ComEd posts one price every 5 minutes, stamped on a 5-minute mark (12:00,
+12:05, ...). Each price appears in the API about 5 minutes after its
+timestamp, right after the next 5-minute mark. The current hour average updates
+at the same moment. ComEd's API documentation doesn't say any of this; it comes
+from measuring the live API on the evening of November 11, 2026:
+
+- Sampling every 2 seconds at four 5-minute marks, each new price appeared
+  16–18 seconds after the mark.
+- Sampling every 20 seconds for 16 minutes, every new price appeared 5:00–5:33
+  after its timestamp, with the hour average updating at the same time.
+- The 24-hour feed had four gaps of 10–35 minutes with no prices.
+
+So instead of polling on a fixed timer, the integration waits after each price
+until the next one should be posted (5 minutes 45 seconds after that price's
+timestamp) and checks then:
+
+- **Normally:** one request per feed every 5 minutes, the minimum needed to see
+  every price. With both sensors that's 24 small requests an hour.
+- **If a price is late:** it checks once a minute for up to 5 minutes.
+  ComEd's feed does have occasional gaps.
+- **If the feed has stalled or requests fail:** every 5 minutes. It never polls
+  faster than ComEd posts.
+
+You can watch it decide by turning on debug logging:
+
+```yaml
+logger:
+  logs:
+    custom_components.comed_hourly_pricing: debug
+```
 
 ## Remove
 

@@ -2,7 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import math
 from typing import Any
@@ -16,11 +16,21 @@ from homeassistant.util.json import json_loads
 
 from .const import (
     API_URL,
+    COMED_TIME_ZONE,
+    CONF_FIVE_MINUTE,
     FEED_API_TYPES,
+    LATE_RETRY_INTERVAL,
+    LATE_RETRY_WINDOW,
     MAX_PRICE_AGE,
+    POSTING_DELAY,
+    PUBLISH_INTERVAL,
+    RANGE_AFTER_NOW,
+    RANGE_BEFORE_NOW,
     REQUEST_TIMEOUT,
-    UPDATE_INTERVAL,
 )
+
+# ComEd's date range format: YYYYMMDDhhmm.
+_RANGE_FORMAT = "%Y%m%d%H%M"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,7 +42,7 @@ class PriceReading:
     price: float
     """Cents per kWh."""
     time: datetime
-    """When ComEd published the price, in UTC."""
+    """ComEd's timestamp for the price, in UTC, on a 5-minute mark."""
 
 
 class ComedPriceCoordinator(DataUpdateCoordinator[PriceReading]):
@@ -41,6 +51,9 @@ class ComedPriceCoordinator(DataUpdateCoordinator[PriceReading]):
     When a fetch fails, the coordinator marks its sensors unavailable instead of
     leaving the last price on screen. It logs an error once when the feed goes
     down and an info message once when it recovers, rather than every 5 minutes.
+
+    After each fetch it schedules the next one for when ComEd should have posted
+    the next price; see next_poll_delay.
     """
 
     def __init__(
@@ -56,17 +69,21 @@ class ComedPriceCoordinator(DataUpdateCoordinator[PriceReading]):
             _LOGGER,
             config_entry=None,
             name=name,
-            update_interval=UPDATE_INTERVAL,
+            update_interval=PUBLISH_INTERVAL,
         )
         self._session = session
-        self._params = {"type": FEED_API_TYPES[feed]}
+        self._feed = feed
 
     async def _async_update_data(self) -> PriceReading:
         """Fetch the newest price, or raise UpdateFailed."""
+        # Applies if this fetch fails. On success it's replaced below.
+        self.update_interval = PUBLISH_INTERVAL
+
+        params = request_params(self._feed, dt_util.utcnow())
         try:
             async with (
                 asyncio.timeout(REQUEST_TIMEOUT),
-                self._session.get(API_URL, params=self._params) as response,
+                self._session.get(API_URL, params=params) as response,
             ):
                 response.raise_for_status()
                 body = await response.text()
@@ -79,14 +96,51 @@ class ComedPriceCoordinator(DataUpdateCoordinator[PriceReading]):
 
         reading = parse_latest_reading(body)
 
-        age = dt_util.utcnow() - reading.time
+        now = dt_util.utcnow()
+        age = now - reading.time
         if age > MAX_PRICE_AGE:
             raise UpdateFailed(
                 f"the newest ComEd price is from {reading.time.isoformat()}, "
                 f"{int(age.total_seconds() // 60)} minutes ago; "
                 "the feed seems to have stopped updating"
             )
+
+        self.update_interval = next_poll_delay(reading.time, now)
+        self.logger.debug(
+            "%s: price %s stamped %s; checking again in %s",
+            self.name,
+            reading.price,
+            reading.time.isoformat(),
+            self.update_interval,
+        )
         return reading
+
+
+def request_params(feed: str, now: datetime) -> dict[str, str]:
+    """Return the API query parameters for a feed."""
+    params = {"type": FEED_API_TYPES[feed]}
+    if feed == CONF_FIVE_MINUTE:
+        local_now = now.astimezone(dt_util.get_time_zone(COMED_TIME_ZONE))
+        params["datestart"] = (local_now - RANGE_BEFORE_NOW).strftime(_RANGE_FORMAT)
+        params["dateend"] = (local_now + RANGE_AFTER_NOW).strftime(_RANGE_FORMAT)
+    return params
+
+
+def next_poll_delay(price_time: datetime, now: datetime) -> timedelta:
+    """Return how long to wait before checking for the price after price_time.
+
+    The next price is stamped PUBLISH_INTERVAL after this one and should appear
+    POSTING_DELAY after that. If that's already past, the price is late: check
+    every LATE_RETRY_INTERVAL for a while, then fall back to PUBLISH_INTERVAL so
+    a stalled feed is never polled faster than ComEd posts.
+    """
+    next_price_due = price_time + PUBLISH_INTERVAL + POSTING_DELAY
+    if next_price_due > now:
+        # The cap only matters if this computer's clock is behind ComEd's.
+        return min(next_price_due - now, PUBLISH_INTERVAL + POSTING_DELAY)
+    if now - next_price_due < LATE_RETRY_WINDOW:
+        return LATE_RETRY_INTERVAL
+    return PUBLISH_INTERVAL
 
 
 def parse_latest_reading(body: str) -> PriceReading:
