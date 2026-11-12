@@ -120,7 +120,8 @@ def parse_newest_price(body: str) -> PriceReading:
         if not math.isfinite(price):  # Home Assistant rejects NaN and infinity.
             raise ValueError(price)
         time = dt_util.utc_from_timestamp(int(newest["millisUTC"]) / 1000)
-    except (ValueError, KeyError, TypeError) as err:
+    # An out-of-range timestamp raises OverflowError or OSError.
+    except (ValueError, KeyError, TypeError, OverflowError, OSError) as err:
         raise UpdateFailed(
             f"unexpected response from the ComEd API: {body[:80]!r}"
         ) from err
@@ -135,5 +136,8 @@ def next_poll_delay(price_time: datetime, now: datetime) -> timedelta:
     """
     late_by = now - (price_time + PUBLISH_INTERVAL + POSTING_DELAY)
     if late_by < timedelta(0):
-        return -late_by
+        # A price stamped after now (Home Assistant's clock is behind, say)
+        # would otherwise put off the next check, and the stale check, by as
+        # long as the clock is off.
+        return min(-late_by, PUBLISH_INTERVAL + POSTING_DELAY)
     return LATE_RETRY_INTERVAL if late_by < LATE_RETRY_WINDOW else PUBLISH_INTERVAL

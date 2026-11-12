@@ -73,7 +73,7 @@ sensor:
 | Option | Required | Default | Description |
 | --- | --- | --- | --- |
 | `type` | yes | | `five_minute` or `current_hour_average` |
-| `name` | no | `ComEd 5 Minute Price` / `ComEd Current Hour Average Price` | Sensor name. Renaming it in YAML creates a new entity; to rename without that, use the UI. |
+| `name` | no | `ComEd 5 Minute Price` / `ComEd Current Hour Average Price`, plus ` USD` with `price_unit: dollars` | Sensor name. Sensors on the same feed need different names. Renaming it in YAML creates a new entity; to rename without that, use the UI. |
 | `offset` | no | `0` | Added to every price, **in ¢/kWh even when `price_unit` is `dollars`**. ComEd's feed is the supply price only, so this is where delivery charges and other per-kWh fees go. |
 | `price_unit` | no | `cents` | `cents` reports ¢/kWh like the built-in integration. `dollars` reports USD/kWh. |
 
@@ -119,9 +119,17 @@ logger:
 
 ## Remove
 
-Delete `custom_components/comed_hourly_pricing/` (or uninstall in HACS) and
-restart. Home Assistant goes back to the built-in integration with the same YAML,
-except that `price_unit` must be removed because the built-in one rejects it.
+Home Assistant keeps a record of each sensor this integration created. If you
+just uninstall it, the built-in integration finds those entity IDs taken and
+names its sensors `sensor.comed_5_minute_price_2` and so on, which breaks
+automations, and the built-in sensors can't be renamed in the UI. So:
+
+1. Remove the `comed_hourly_pricing` sensors from `configuration.yaml`, delete
+   `custom_components/comed_hourly_pricing/` (or uninstall in HACS), and restart.
+2. In **Settings → Devices & services → Entities**, search for `comed`, select
+   the old sensors, and delete them.
+3. Put the YAML back, without `price_unit` (the built-in integration rejects
+   it), and restart.
 
 ## Development
 

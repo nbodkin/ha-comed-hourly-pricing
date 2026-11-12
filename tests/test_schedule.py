@@ -5,6 +5,7 @@ import json
 
 import aiohttp
 from freezegun.api import FrozenDateTimeFactory
+from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 import pytest
@@ -83,6 +84,11 @@ NEXT_PRICE_DUE = PRICE_TIME + PUBLISH_INTERVAL + POSTING_DELAY
             NEXT_PRICE_DUE + timedelta(minutes=6),
             PUBLISH_INTERVAL,
             id="next_price_very_late",
+        ),
+        pytest.param(
+            PRICE_TIME - timedelta(hours=2),
+            PUBLISH_INTERVAL + POSTING_DELAY,
+            id="price_stamped_after_now",
         ),
     ],
 )
@@ -166,3 +172,23 @@ async def test_failure_waits_a_full_interval(
 
     await advance_to(hass, freezer, start + PUBLISH_INTERVAL + timedelta(seconds=1))
     assert aioclient_mock.call_count == 2
+
+
+async def test_clock_behind_still_checks(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """If Home Assistant's clock is behind ComEd's, an outage still shows up."""
+    start = utc("2026-11-11T23:37:00Z")
+    freezer.move_to(start)
+    aioclient_mock.get(HOUR_AVERAGE_URL, text=price_at("2026-11-12T01:30:00Z", 5.2))
+    await setup_feed(hass, "current_hour_average")
+    assert hass.states.get(HOUR_AVERAGE_ENTITY).state == "5.2"
+
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(HOUR_AVERAGE_URL, status=503)
+    longest_wait = PUBLISH_INTERVAL + POSTING_DELAY
+    await advance_to(hass, freezer, start + longest_wait + timedelta(seconds=1))
+    assert aioclient_mock.call_count == 1
+    assert hass.states.get(HOUR_AVERAGE_ENTITY).state == STATE_UNAVAILABLE

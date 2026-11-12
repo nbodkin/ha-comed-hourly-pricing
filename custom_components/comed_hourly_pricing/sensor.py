@@ -1,5 +1,7 @@
 """Sensors for ComEd Hourly Pricing."""
 
+import logging
+
 # Home Assistant 2026.10 replaced voluptuous with probatio but still answers to
 # the old name for custom integrations, so this works before and after.
 from homeassistant.components.sensor import (
@@ -18,6 +20,8 @@ from homeassistant.util import slugify
 import voluptuous as vol
 
 from .coordinator import ComedPriceCoordinator
+
+_LOGGER = logging.getLogger(__name__)
 
 CONF_MONITORED_FEEDS = "monitored_feeds"
 CONF_PRICE_UNIT = "price_unit"
@@ -57,27 +61,36 @@ async def async_setup_platform(
     """Set up ComEd Hourly Pricing sensors from YAML."""
     session = async_get_clientsession(hass)
     coordinators: dict[str, ComedPriceCoordinator] = {}  # One per feed.
-    entities = []
+    entities: dict[str, ComedHourlyPricingSensor] = {}  # By unique ID.
     for sensor_config in config[CONF_MONITORED_FEEDS]:
         feed = sensor_config[CONF_TYPE]
-        api_type, default_name = FEEDS[feed]
+        api_type, feed_name = FEEDS[feed]
         if feed not in coordinators:
-            coordinator = ComedPriceCoordinator(hass, session, api_type, default_name)
+            coordinator = ComedPriceCoordinator(hass, session, api_type, feed_name)
             coordinators[feed] = coordinator
             # Without a config entry, polling doesn't stop at shutdown unless asked.
             await coordinator.async_register_shutdown()
             # If this fails, the sensors start out unavailable and it keeps trying.
             await coordinator.async_refresh()
-        entities.append(
-            ComedHourlyPricingSensor(
-                coordinators[feed],
-                feed,
-                sensor_config.get(CONF_NAME) or default_name,
-                sensor_config[CONF_OFFSET],
-                sensor_config[CONF_PRICE_UNIT] == "dollars",
-            )
+        in_dollars = sensor_config[CONF_PRICE_UNIT] == "dollars"
+        # A dollars sensor gets its own default name, so it can sit beside a
+        # cents one on the same feed.
+        name = sensor_config.get(CONF_NAME) or (
+            f"{feed_name} USD" if in_dollars else feed_name
         )
-    async_add_entities(entities)
+        sensor = ComedHourlyPricingSensor(
+            coordinators[feed], feed, name, sensor_config[CONF_OFFSET], in_dollars
+        )
+        # Home Assistant would drop it anyway, with a confusing error.
+        if sensor.unique_id in entities:
+            _LOGGER.error(
+                "Skipping a second %s sensor named %r; give each one a different name",
+                feed,
+                name,
+            )
+            continue
+        entities[sensor.unique_id] = sensor
+    async_add_entities(entities.values())
 
 
 class ComedHourlyPricingSensor(CoordinatorEntity[ComedPriceCoordinator], SensorEntity):

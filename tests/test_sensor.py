@@ -126,6 +126,33 @@ async def test_dollars(hass: HomeAssistant) -> None:
     assert hass.states.get("sensor.comed_usd_offset").state == "0.047"
 
 
+@pytest.mark.usefixtures("healthy_api")
+async def test_unnamed_dollars_sensor_beside_cents_one(hass: HomeAssistant) -> None:
+    """A dollars sensor's default name differs from the cents one's."""
+    await setup_sensors(hass, FIVE_MINUTE, {**FIVE_MINUTE, "price_unit": "dollars"})
+
+    assert hass.states.get(FIVE_MINUTE_ENTITY).state == "3.7"
+    assert hass.states.get("sensor.comed_5_minute_price_usd").state == "0.037"
+
+
+@pytest.mark.usefixtures("healthy_api")
+async def test_duplicate_name_is_skipped(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Two sensors with one name on one feed: the first is kept, with a clear error."""
+    await setup_sensors(
+        hass, {**FIVE_MINUTE, "offset": 1}, {**FIVE_MINUTE, "offset": 2}
+    )
+
+    assert hass.states.async_entity_ids("sensor") == [FIVE_MINUTE_ENTITY]
+    assert hass.states.get(FIVE_MINUTE_ENTITY).state == "4.7"
+    assert (
+        "Skipping a second five_minute sensor named 'ComEd 5 Minute Price'"
+        in caplog.text
+    )
+    assert "does not generate unique IDs" not in caplog.text
+
+
 async def test_one_request_per_feed(
     hass: HomeAssistant,
     healthy_api: AiohttpClientMocker,
@@ -166,6 +193,14 @@ async def test_newest_price_wins(
         ),
         pytest.param({"text": feed("NaN")}, id="nan_price"),
         pytest.param({"text": '[{"price": "3.7"}]'}, id="missing_timestamp"),
+        pytest.param(
+            {"text": '[{"millisUTC": "99999999999999999999", "price": "3.7"}]'},
+            id="timestamp_out_of_range",
+        ),
+        pytest.param(
+            {"text": json.dumps([{"millisUTC": "9" * 400, "price": "3.7"}])},
+            id="timestamp_too_big_for_a_float",
+        ),
         pytest.param(
             {"text": feed(3.7, newest_age=timedelta(minutes=40))}, id="stale_feed"
         ),
