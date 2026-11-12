@@ -230,23 +230,40 @@ async def test_clock_behind_still_checks(
     assert hass.states.get(HOUR_AVERAGE_ENTITY).state == STATE_UNAVAILABLE
 
 
+DATE = "Thu, 12 Nov 2026 01:58:21 GMT"
+
+
 @pytest.mark.parametrize(
-    ("header", "expected"),
+    ("date", "age", "expected"),
     [
-        pytest.param("Thu, 12 Nov 2026 01:58:21 GMT", "2026-11-12T01:58:21Z", id="gmt"),
+        pytest.param(DATE, None, "2026-11-12T01:58:21Z", id="gmt"),
         pytest.param(
-            "Thu, 12 Nov 2026 01:58:21 -0000", "2026-11-12T01:58:21Z", id="no_zone"
+            "Thu, 12 Nov 2026 01:58:21 -0000",
+            None,
+            "2026-11-12T01:58:21Z",
+            id="no_zone",
         ),
-        pytest.param(None, "2026-11-12T03:00:00Z", id="missing"),
-        pytest.param("not a date", "2026-11-12T03:00:00Z", id="unreadable"),
+        pytest.param(None, None, "2026-11-12T03:00:00Z", id="missing"),
+        pytest.param("not a date", None, "2026-11-12T03:00:00Z", id="unreadable"),
+        pytest.param(DATE, "120", "2026-11-12T02:00:21Z", id="from_a_cache"),
+        pytest.param(DATE, "soon", "2026-11-12T01:58:21Z", id="unreadable_age"),
+        pytest.param(DATE, "-60", "2026-11-12T01:58:21Z", id="negative_age"),
+        pytest.param(DATE, "9" * 30, "2094-11-30T05:12:29Z", id="huge_age"),
+        pytest.param(None, "120", "2026-11-12T03:00:00Z", id="age_without_date"),
+        pytest.param(
+            "Fri, 31 Dec 9999 23:59:59 GMT",
+            "120",
+            "2026-11-12T03:00:00Z",
+            id="date_too_late_to_add_age",
+        ),
     ],
 )
 def test_comed_time(
-    freezer: FrozenDateTimeFactory, header: str | None, expected: str
+    freezer: FrozenDateTimeFactory, date: str | None, age: str | None, expected: str
 ) -> None:
-    """ComEd's time comes from the Date header, or Home Assistant's clock without one."""
+    """ComEd's time is Date plus any Age, or Home Assistant's clock without Date."""
     freezer.move_to("2026-11-12T03:00:00Z")
-    assert comed_time(header) == utc(expected)
+    assert comed_time(date, age) == utc(expected)
 
 
 # Measured: each price appears 5:17 after its timestamp.

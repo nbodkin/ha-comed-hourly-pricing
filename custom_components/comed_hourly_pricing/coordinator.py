@@ -97,13 +97,14 @@ class ComedPriceCoordinator(DataUpdateCoordinator[PriceReading]):
                 response.raise_for_status()
                 body = await response.text()
                 date_header = response.headers.get("Date")
+                age_header = response.headers.get("Age")
         except (TimeoutError, aiohttp.ClientError) as err:
             raise UpdateFailed(f"can't reach the ComEd API: {err!r}") from err
 
         reading = parse_newest_price(body)
         # Compared with ComEd's clock, not Home Assistant's, so the stale check
         # and the schedule both work even if Home Assistant's clock is off.
-        now = comed_time(date_header)
+        now = comed_time(date_header, age_header)
         if now - reading.time > MAX_PRICE_AGE:
             raise UpdateFailed(
                 f"the newest ComEd price is from {reading.time}; "
@@ -141,20 +142,36 @@ def parse_newest_price(body: str) -> PriceReading:
     return PriceReading(price, time)
 
 
-def comed_time(date_header: str | None) -> datetime:
-    """Return ComEd's time from a response's Date header.
+def comed_time(date_header: str | None, age_header: str | None = None) -> datetime:
+    """Return ComEd's time from a response's Date and Age headers.
 
-    Falls back to Home Assistant's clock, read now (after the response), if the
-    header is missing or unreadable.
+    A cache that serves a stored response keeps its original Date and adds an
+    Age header, in seconds since then, so the two together give the current
+    time. Falls back to Home Assistant's clock, read now (after the response),
+    if Date is missing or unreadable.
     """
     if date_header:
         try:
             parsed = parsedate_to_datetime(date_header)
-        except TypeError, ValueError:
+            made = parsed.replace(tzinfo=parsed.tzinfo or dt_util.UTC)
+            return made + cache_age(age_header)
+        # OverflowError: a Date near the year 9999 plus a large Age.
+        except TypeError, ValueError, OverflowError:
             pass
-        else:
-            return parsed.replace(tzinfo=parsed.tzinfo or dt_util.UTC)
     return dt_util.utcnow()
+
+
+def cache_age(age_header: str | None) -> timedelta:
+    """Return how long a response was stored in a cache, from its Age header.
+
+    An unreadable or negative Age counts as none.
+    """
+    try:
+        seconds = int(age_header or 0)
+    except ValueError:
+        return timedelta(0)
+    # RFC 9111 says to treat an Age too large to handle as 2**31 seconds.
+    return timedelta(seconds=min(max(seconds, 0), 2**31))
 
 
 def next_poll_delay(price_time: datetime, now: datetime) -> timedelta:

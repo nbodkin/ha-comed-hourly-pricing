@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import timedelta
+from email.utils import format_datetime
 import json
 import logging
 from typing import Any
@@ -57,6 +58,20 @@ def feed(*prices: Any, newest_age: timedelta = timedelta(minutes=5)) -> str:
             for i, price in enumerate(prices)
         ]
     )
+
+
+def cached_copy(age: timedelta) -> dict[str, Any]:
+    """Build a response that was fresh when made, then kept in a cache for `age`.
+
+    Like a real cache, it keeps the original Date and adds an Age header.
+    """
+    return {
+        "text": feed(3.7, newest_age=age + timedelta(minutes=5)),
+        "headers": {
+            "Date": format_datetime(dt_util.utcnow() - age, usegmt=True),
+            "Age": str(int(age.total_seconds())),
+        },
+    }
 
 
 async def setup_sensors(hass: HomeAssistant, *sensors: dict[str, Any]) -> None:
@@ -298,6 +313,7 @@ async def test_newest_price_wins(
         pytest.param(
             {"text": feed(3.7, newest_age=timedelta(minutes=40))}, id="stale_feed"
         ),
+        pytest.param(cached_copy(timedelta(minutes=40)), id="stale_copy_from_a_cache"),
         pytest.param({"status": 503, "text": "Service Unavailable"}, id="http_503"),
         pytest.param(
             {"exc": aiohttp.ClientError("connection reset")}, id="client_error"
@@ -325,6 +341,16 @@ async def test_bad_response_makes_sensor_unavailable(
         for record in caplog.records
         if record.levelno >= logging.ERROR and record.exc_info
     ]
+
+
+async def test_recent_copy_from_a_cache_is_used(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """A cached response that's still recent counts as fresh."""
+    aioclient_mock.get(FIVE_MINUTE_URL, **cached_copy(timedelta(minutes=1)))
+    await setup_sensors(hass, FIVE_MINUTE)
+
+    assert hass.states.get(FIVE_MINUTE_ENTITY).state == "3.7"
 
 
 async def test_outage_and_recovery(
