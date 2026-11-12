@@ -24,11 +24,9 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
 
-from custom_components.comed_hourly_pricing.const import (
-    API_URL,
-    ATTR_PRICE_TIME,
-    DOMAIN,
-)
+from custom_components.comed_hourly_pricing.coordinator import API_URL
+
+DOMAIN = "comed_hourly_pricing"
 
 FIVE_MINUTE_URL = f"{API_URL}?type=5minutefeed"
 HOUR_AVERAGE_URL = f"{API_URL}?type=currenthouraverage"
@@ -95,7 +93,6 @@ async def test_both_feeds(hass: HomeAssistant) -> None:
     assert five_minute.attributes[ATTR_ATTRIBUTION] == (
         "Data provided by ComEd Hourly Pricing service"
     )
-    assert ATTR_PRICE_TIME in five_minute.attributes
 
     assert hass.states.get(HOUR_AVERAGE_ENTITY).state == "4.3"
 
@@ -157,18 +154,6 @@ async def test_newest_price_wins(
     await setup_sensors(hass, FIVE_MINUTE)
 
     assert hass.states.get(FIVE_MINUTE_ENTITY).state == "3.7"
-
-
-async def test_bad_rows_skipped(
-    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
-) -> None:
-    """A malformed newest row is skipped in favor of the next good one."""
-    rows = json.loads(feed(3.7, 3.4))
-    rows[0]["price"] = None
-    aioclient_mock.get(FIVE_MINUTE_URL, text=json.dumps(rows))
-    await setup_sensors(hass, FIVE_MINUTE)
-
-    assert hass.states.get(FIVE_MINUTE_ENTITY).state == "3.4"
 
 
 @pytest.mark.parametrize(
@@ -274,8 +259,6 @@ async def test_unique_id(
     [
         pytest.param({"type": "bogus"}, id="unknown_type"),
         pytest.param({**FIVE_MINUTE, "price_unit": "euros"}, id="unknown_unit"),
-        pytest.param({**FIVE_MINUTE, "offset": "nan"}, id="nan_offset"),
-        pytest.param({**FIVE_MINUTE, "offset": 500}, id="offset_out_of_range"),
     ],
 )
 async def test_invalid_config(

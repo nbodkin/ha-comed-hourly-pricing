@@ -17,8 +17,6 @@ entity IDs keep working, and fixes how it handles errors:
 | Prices only in ¢/kWh, which the Energy dashboard reads as **dollars** (costs 100× too high). | Optional `price_unit: dollars` for the Energy dashboard. |
 | No long-term statistics; can't be renamed in the UI. | `state_class: measurement` and a unique ID. |
 
-Each sensor also gets a `price_time` attribute: when ComEd published the price.
-
 Tested on Home Assistant 2026.8.3, 2026.10.4 and 2026.11.1.
 
 ## Install
@@ -57,7 +55,7 @@ sensor:
 | --- | --- | --- | --- |
 | `type` | yes | | `five_minute` or `current_hour_average` |
 | `name` | no | `ComEd 5 Minute Price` / `ComEd Current Hour Average Price` | Sensor name. Renaming it in YAML creates a new entity; to rename without that, use the UI. |
-| `offset` | no | `0` | Added to every price, **in ¢/kWh even when `price_unit` is `dollars`**. ComEd's feed is the supply price only, so this is where delivery charges and other per-kWh fees go. Must be between -100 and 100. |
+| `offset` | no | `0` | Added to every price, **in ¢/kWh even when `price_unit` is `dollars`**. ComEd's feed is the supply price only, so this is where delivery charges and other per-kWh fees go. |
 | `price_unit` | no | `cents` | `cents` reports ¢/kWh like the built-in integration. `dollars` reports USD/kWh. |
 
 ### Energy dashboard

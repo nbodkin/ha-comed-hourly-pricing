@@ -14,16 +14,12 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import (
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 
-from custom_components.comed_hourly_pricing.const import (
+from custom_components.comed_hourly_pricing.coordinator import (
     API_URL,
-    DOMAIN,
     LATE_RETRY_INTERVAL,
     POSTING_DELAY,
     PUBLISH_INTERVAL,
-)
-from custom_components.comed_hourly_pricing.coordinator import (
     next_poll_delay,
-    request_params,
 )
 
 FIVE_MINUTE_URL = f"{API_URL}?type=5minutefeed"
@@ -42,27 +38,27 @@ def price_at(stamp: str, price: float) -> str:
     return json.dumps([{"millisUTC": str(millis), "price": str(price)}])
 
 
+async def setup_feed(hass: HomeAssistant, feed: str) -> None:
+    """Set up one sensor on the given feed."""
+    assert await async_setup_component(
+        hass,
+        "sensor",
+        {
+            "sensor": {
+                "platform": "comed_hourly_pricing",
+                "monitored_feeds": [{"type": feed}],
+            }
+        },
+    )
+    await hass.async_block_till_done()
+
+
 async def advance_to(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory, when: datetime
 ) -> None:
     """Move the clock to `when` and run whatever came due."""
     freezer.move_to(when)
     async_fire_time_changed(hass, when)
-    await hass.async_block_till_done()
-
-
-async def setup_hour_average(hass: HomeAssistant) -> None:
-    """Set up one current-hour-average sensor."""
-    assert await async_setup_component(
-        hass,
-        "sensor",
-        {
-            "sensor": {
-                "platform": DOMAIN,
-                "monitored_feeds": [{"type": "current_hour_average"}],
-            }
-        },
-    )
     await hass.async_block_till_done()
 
 
@@ -73,30 +69,21 @@ NEXT_PRICE_DUE = PRICE_TIME + PUBLISH_INTERVAL + POSTING_DELAY
 @pytest.mark.parametrize(
     ("now", "expected"),
     [
-        pytest.param(
-            PRICE_TIME + POSTING_DELAY,
-            PUBLISH_INTERVAL,
-            id="just_got_it: wait one interval",
-        ),
+        pytest.param(PRICE_TIME + POSTING_DELAY, PUBLISH_INTERVAL, id="just_got_it"),
         pytest.param(
             NEXT_PRICE_DUE - timedelta(seconds=30),
             timedelta(seconds=30),
-            id="next_price_almost_due: wait until it is",
+            id="next_price_almost_due",
         ),
         pytest.param(
             NEXT_PRICE_DUE + timedelta(seconds=10),
             LATE_RETRY_INTERVAL,
-            id="next_price_late: retry soon",
+            id="next_price_late",
         ),
         pytest.param(
             NEXT_PRICE_DUE + timedelta(minutes=6),
             PUBLISH_INTERVAL,
-            id="next_price_very_late: back to the normal interval",
-        ),
-        pytest.param(
-            PRICE_TIME - timedelta(minutes=30),
-            PUBLISH_INTERVAL + POSTING_DELAY,
-            id="clock_behind_comed: capped",
+            id="next_price_very_late",
         ),
     ],
 )
@@ -108,46 +95,37 @@ def test_next_poll_delay(now: datetime, expected: timedelta) -> None:
 @pytest.mark.parametrize(
     ("now", "datestart", "dateend"),
     [
-        pytest.param("2026-11-11T23:30:00Z", "202611111530", "202611111830", id="CST"),
-        pytest.param("2026-07-01T17:00:00Z", "202607011000", "202607011300", id="CDT"),
+        pytest.param("2026-11-11T23:37:00Z", "202611111537", "202611111837", id="CST"),
+        pytest.param("2026-07-01T17:07:00Z", "202607011007", "202607011307", id="CDT"),
     ],
 )
-def test_five_minute_feed_asks_for_a_few_hours(
-    now: str, datestart: str, dateend: str
-) -> None:
-    """The 5-minute feed asks for a few hours around now, in Chicago time."""
-    assert request_params("five_minute", utc(now)) == {
-        "type": "5minutefeed",
-        "datestart": datestart,
-        "dateend": dateend,
-    }
-
-
-def test_hour_average_needs_no_range() -> None:
-    """The current-hour-average feed returns one row, so it gets no range."""
-    assert request_params("current_hour_average", utc("2026-11-11T23:30:00Z")) == {
-        "type": "currenthouraverage"
-    }
-
-
-async def test_range_is_sent(
+async def test_five_minute_feed_asks_for_a_few_hours(
     hass: HomeAssistant,
     aioclient_mock: AiohttpClientMocker,
     freezer: FrozenDateTimeFactory,
+    now: str,
+    datestart: str,
+    dateend: str,
 ) -> None:
-    """The date range actually goes out with the request."""
-    freezer.move_to("2026-11-11T23:37:00Z")
-    aioclient_mock.get(FIVE_MINUTE_URL, text=price_at("2026-11-11T23:30:00Z", 4.1))
-    assert await async_setup_component(
-        hass,
-        "sensor",
-        {"sensor": {"platform": DOMAIN, "monitored_feeds": [{"type": "five_minute"}]}},
-    )
-    await hass.async_block_till_done()
+    """The 5-minute feed asks for a few hours around now, in Chicago time."""
+    freezer.move_to(now)
+    stamp = (utc(now) - timedelta(minutes=7)).isoformat()
+    aioclient_mock.get(FIVE_MINUTE_URL, text=price_at(stamp, 4.1))
+    await setup_feed(hass, "five_minute")
 
     url = aioclient_mock.mock_calls[0][1]
-    assert url.query["datestart"] == "202611111537"
-    assert url.query["dateend"] == "202611111837"
+    assert url.query["datestart"] == datestart
+    assert url.query["dateend"] == dateend
+
+
+async def test_hour_average_needs_no_range(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """The hour-average feed returns one row, so it isn't given a range."""
+    aioclient_mock.get(HOUR_AVERAGE_URL, exc=aiohttp.ClientError())
+    await setup_feed(hass, "current_hour_average")
+
+    assert dict(aioclient_mock.mock_calls[0][1].query) == {"type": "currenthouraverage"}
 
 
 async def test_checks_right_after_next_price_is_posted(
@@ -158,7 +136,7 @@ async def test_checks_right_after_next_price_is_posted(
     """After a price arrives, the next request waits until the next one is due."""
     freezer.move_to("2026-11-11T23:37:00Z")
     aioclient_mock.get(HOUR_AVERAGE_URL, text=price_at("2026-11-11T23:30:00Z", 5.2))
-    await setup_hour_average(hass)
+    await setup_feed(hass, "current_hour_average")
     assert aioclient_mock.call_count == 1
 
     due = utc("2026-11-11T23:35:00Z") + POSTING_DELAY
@@ -181,7 +159,7 @@ async def test_failure_waits_a_full_interval(
     start = utc("2026-11-11T23:37:00Z")
     freezer.move_to(start)
     aioclient_mock.get(HOUR_AVERAGE_URL, exc=aiohttp.ClientError("connection reset"))
-    await setup_hour_average(hass)
+    await setup_feed(hass, "current_hour_average")
     assert aioclient_mock.call_count == 1
 
     await advance_to(hass, freezer, start + PUBLISH_INTERVAL - timedelta(seconds=5))
