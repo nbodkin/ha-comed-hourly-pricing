@@ -1,6 +1,5 @@
 """Sensors for ComEd Hourly Pricing."""
 
-import asyncio
 import logging
 
 # Home Assistant 2026.10 replaced voluptuous with probatio but still answers to
@@ -10,32 +9,26 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME, CONF_OFFSET, CONF_TYPE
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import PlatformNotReady
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import (
     AddConfigEntryEntitiesCallback,
     AddEntitiesCallback,
 )
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.util import dt as dt_util, slugify
+from homeassistant.util import slugify
 from homeassistant.util.hass_dict import HassKey
 import voluptuous as vol
 
+from . import ComedConfigEntry
 from .const import CONF_PRICE_UNIT, DOMAIN, FEEDS, default_name
-from .coordinator import COMED_TIME_ZONE, ComedPriceCoordinator
+from .coordinator import ComedPriceCoordinator, async_get_feed, async_start_feed
 
 _LOGGER = logging.getLogger(__name__)
 
-# Each feed's coordinator, as the task that creates it and fetches the first
-# price. Kept here so every sensor on a feed shares one request, whether it's
-# from the UI or from any `platform: comed_hourly_pricing` entry in YAML.
-DATA_FEEDS: HassKey[dict[str, asyncio.Task[ComedPriceCoordinator]]] = HassKey(
-    f"{DOMAIN}_feeds"
-)
 # Unique IDs already used, across all `platform: comed_hourly_pricing` entries.
 # Sensors from the UI use their entry's ID, so they can't clash.
 DATA_UNIQUE_IDS: HassKey[set[str]] = HassKey(f"{DOMAIN}_unique_ids")
@@ -68,19 +61,24 @@ async def async_setup_platform(
     discovery_info: DiscoveryInfoType | None = None,
 ) -> None:
     """Set up ComEd Hourly Pricing sensors from YAML."""
+    feeds = {sensor_config[CONF_TYPE] for sensor_config in config[CONF_MONITORED_FEEDS]}
     # Start every feed before waiting on any, so a slow API delays startup once.
-    for sensor_config in config[CONF_MONITORED_FEEDS]:
-        _feed(hass, sensor_config[CONF_TYPE])
+    for feed in feeds:
+        async_start_feed(hass, feed)
+    try:
+        coordinators = {feed: await async_get_feed(hass, feed) for feed in feeds}
+    except Exception as err:
+        # Starting a feed only fails unexpectedly, so try again later.
+        raise PlatformNotReady(f"couldn't start a ComEd feed: {err!r}") from err
 
     used_unique_ids = hass.data.setdefault(DATA_UNIQUE_IDS, set())
     entities = []
     for sensor_config in config[CONF_MONITORED_FEEDS]:
         feed = sensor_config[CONF_TYPE]
-        coordinator = await _feed(hass, feed)
         in_dollars = sensor_config[CONF_PRICE_UNIT] == "dollars"
         name = sensor_config.get(CONF_NAME) or default_name(feed, in_dollars)
         sensor = ComedHourlyPricingSensor(
-            coordinator, feed, name, sensor_config[CONF_OFFSET], in_dollars
+            coordinators[feed], feed, name, sensor_config[CONF_OFFSET], in_dollars
         )
         # Home Assistant would drop it anyway, with a confusing error.
         if sensor.unique_id in used_unique_ids:
@@ -97,54 +95,24 @@ async def async_setup_platform(
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: ComedConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the sensor for an entry added in the UI."""
-    feed = entry.data[CONF_TYPE]
     async_add_entities(
         [
             ComedHourlyPricingSensor(
-                await _feed(hass, feed),
-                feed,
-                entry.title,
+                entry.runtime_data,
+                entry.data[CONF_TYPE],
+                # Its own name, not the entry's title: renaming the entry only
+                # changes its label on the integration page.
+                entry.data[CONF_NAME],
                 entry.options[CONF_OFFSET],
                 entry.data[CONF_PRICE_UNIT] == "dollars",
                 unique_id=entry.entry_id,
             )
         ]
     )
-
-
-def _feed(hass: HomeAssistant, feed: str) -> asyncio.Task[ComedPriceCoordinator]:
-    """Return the task that starts a feed, starting it if needed."""
-    starts = hass.data.setdefault(DATA_FEEDS, {})
-    if feed not in starts:
-        starts[feed] = hass.async_create_task(_async_start_feed(hass, feed))
-    return starts[feed]
-
-
-async def _async_start_feed(hass: HomeAssistant, feed: str) -> ComedPriceCoordinator:
-    """Create a feed's coordinator and fetch its first price."""
-    api_type, feed_name = FEEDS[feed]
-    range_time_zone = None
-    if api_type == "5minutefeed":
-        # Its requests ask for a range of times, which ComEd reads in its own zone.
-        range_time_zone = await dt_util.async_get_time_zone(COMED_TIME_ZONE)
-        if range_time_zone is None:
-            _LOGGER.warning(
-                "Couldn't load the %s time zone, so the 5-minute feed will "
-                "download all 24 hours of prices each time",
-                COMED_TIME_ZONE,
-            )
-    coordinator = ComedPriceCoordinator(
-        hass, async_get_clientsession(hass), api_type, feed_name, range_time_zone
-    )
-    # Without a config entry, polling doesn't stop at shutdown unless asked.
-    await coordinator.async_register_shutdown()
-    # If this fails, the sensors start out unavailable and it keeps trying.
-    await coordinator.async_refresh()
-    return coordinator
 
 
 class ComedHourlyPricingSensor(CoordinatorEntity[ComedPriceCoordinator], SensorEntity):

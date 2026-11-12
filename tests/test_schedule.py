@@ -2,7 +2,6 @@
 
 from datetime import datetime, timedelta
 from email.utils import format_datetime
-import json
 from typing import Any
 
 import aiohttp
@@ -20,7 +19,6 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import (
 from yarl import URL
 
 from custom_components.comed_hourly_pricing.coordinator import (
-    API_URL,
     LATE_RETRY_INTERVAL,
     POSTING_DELAY,
     PUBLISH_INTERVAL,
@@ -28,23 +26,14 @@ from custom_components.comed_hourly_pricing.coordinator import (
     next_poll_delay,
 )
 
-FIVE_MINUTE_URL = f"{API_URL}?type=5minutefeed"
-HOUR_AVERAGE_URL = f"{API_URL}?type=currenthouraverage"
-HOUR_AVERAGE_ENTITY = "sensor.comed_current_hour_average_price"
-
-
-def utc(text: str) -> datetime:
-    """Parse an ISO time in UTC, like 2026-11-11T12:00:00Z."""
-    parsed = datetime.fromisoformat(text)
-    if parsed.utcoffset() != timedelta(0):
-        raise ValueError(f"not a UTC time: {text}")
-    return parsed
-
-
-def price_at(stamp: str, price: float) -> str:
-    """Build a one-row API response."""
-    millis = int(utc(stamp).timestamp() * 1000)
-    return json.dumps([{"millisUTC": str(millis), "price": str(price)}])
+from .common import (
+    FIVE_MINUTE_URL,
+    HOUR_AVERAGE_ENTITY,
+    HOUR_AVERAGE_URL,
+    advance_to,
+    price_at,
+    utc,
+)
 
 
 async def setup_feed(hass: HomeAssistant, feed: str) -> None:
@@ -59,15 +48,6 @@ async def setup_feed(hass: HomeAssistant, feed: str) -> None:
             }
         },
     )
-    await hass.async_block_till_done()
-
-
-async def advance_to(
-    hass: HomeAssistant, freezer: FrozenDateTimeFactory, when: datetime
-) -> None:
-    """Move the clock to `when` and run whatever came due."""
-    freezer.move_to(when)
-    async_fire_time_changed(hass, when)
     await hass.async_block_till_done()
 
 

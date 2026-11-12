@@ -70,10 +70,16 @@ Or go to **Settings → Devices & services → Add integration** and search for
 - **Unit:** cents or dollars per kWh. Use dollars for the [Energy dashboard](#energy-dashboard).
 - **Offset:** added to every price, in ¢/kWh (see `offset` below).
 - **Name:** optional. Leave it blank for the same names as YAML's defaults.
+  Each sensor needs its own name; the setup screen asks for another if it's taken.
 
 Each sensor is its own entry, so add the integration again for each one you
 want. To change a sensor's offset later, click **Configure** on its entry.
-To change its price or unit, add a new sensor and delete the old one.
+To change its price or unit, add a new sensor and delete the old one. Renaming
+an entry only changes its label on the integration page; to rename the sensor,
+use its entity settings.
+
+The entry's **Enable polling for updates** system option doesn't apply: all
+sensors on a price share one feed, which is checked on ComEd's schedule.
 
 ### In YAML
 

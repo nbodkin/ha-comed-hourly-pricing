@@ -10,9 +10,13 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
+from homeassistant.util.hass_dict import HassKey
 from homeassistant.util.json import json_loads
+
+from .const import DOMAIN, FEEDS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,6 +41,12 @@ MAX_PRICE_AGE = timedelta(minutes=30)
 COMED_TIME_ZONE = "America/Chicago"
 RANGE_BEFORE_NOW = timedelta(hours=2)
 RANGE_AFTER_NOW = timedelta(hours=1)
+
+# Each feed's coordinator, as the task that creates it and fetches the first
+# price. Every sensor on a feed shares it, whether it's from the UI or YAML.
+DATA_FEEDS: HassKey[dict[str, asyncio.Task[ComedPriceCoordinator]]] = HassKey(
+    f"{DOMAIN}_feeds"
+)
 
 
 @dataclass(frozen=True)
@@ -77,11 +87,33 @@ class ComedPriceCoordinator(DataUpdateCoordinator[PriceReading]):
         self._session = session
         self._api_type = api_type
         self._range_time_zone = range_time_zone
+        self._next_check = dt_util.utcnow()
+
+    async def async_wake(self) -> None:
+        """Get ready for a sensor on a feed that no other sensor is using.
+
+        With no sensors, the coordinator stops polling, so its price may be old,
+        and it would otherwise wait a full interval from when a sensor comes
+        back. So fetch now if the next check is already overdue, and otherwise
+        keep that check's time.
+        """
+        if self._listeners:
+            return
+        remaining = self._next_check - dt_util.utcnow()
+        if remaining <= timedelta(0):
+            await self.async_refresh()
+        else:
+            self.update_interval = remaining
+
+    def _check_again_in(self, delay: timedelta) -> None:
+        """Schedule the next check."""
+        self.update_interval = delay
+        self._next_check = dt_util.utcnow() + delay
 
     async def _async_update_data(self) -> PriceReading:
         """Fetch the newest price, or raise UpdateFailed."""
         # Used if this fetch fails; replaced below if it succeeds.
-        self.update_interval = PUBLISH_INTERVAL
+        self._check_again_in(PUBLISH_INTERVAL)
 
         params = {"type": self._api_type}
         if self._range_time_zone is not None:
@@ -111,7 +143,7 @@ class ComedPriceCoordinator(DataUpdateCoordinator[PriceReading]):
                 "the feed seems to have stalled"
             )
 
-        self.update_interval = next_poll_delay(reading.time, now)
+        self._check_again_in(next_poll_delay(reading.time, now))
         self.logger.debug(
             "%s: price %s stamped %s; checking again in %s",
             self.name,
@@ -120,6 +152,60 @@ class ComedPriceCoordinator(DataUpdateCoordinator[PriceReading]):
             self.update_interval,
         )
         return reading
+
+
+def async_start_feed(
+    hass: HomeAssistant, feed: str
+) -> asyncio.Task[ComedPriceCoordinator]:
+    """Start a feed's coordinator, unless it's started; return the task that does it.
+
+    If starting fails, the task is forgotten, so the next sensor tries again.
+    """
+    starts = hass.data.setdefault(DATA_FEEDS, {})
+    if feed not in starts:
+        task = hass.async_create_task(
+            _async_create_coordinator(hass, feed), name=f"Start ComEd {feed} feed"
+        )
+
+        def forget_if_failed(task: asyncio.Task[ComedPriceCoordinator]) -> None:
+            if (task.cancelled() or task.exception()) and starts.get(feed) is task:
+                del starts[feed]
+
+        task.add_done_callback(forget_if_failed)
+        starts[feed] = task
+    return starts[feed]
+
+
+async def async_get_feed(hass: HomeAssistant, feed: str) -> ComedPriceCoordinator:
+    """Return a feed's coordinator, ready for another sensor."""
+    coordinator = await async_start_feed(hass, feed)
+    await coordinator.async_wake()
+    return coordinator
+
+
+async def _async_create_coordinator(
+    hass: HomeAssistant, feed: str
+) -> ComedPriceCoordinator:
+    """Create a feed's coordinator and fetch its first price."""
+    api_type, name = FEEDS[feed]
+    range_time_zone = None
+    if api_type == "5minutefeed":
+        # Its requests ask for a range of times, which ComEd reads in its own zone.
+        range_time_zone = await dt_util.async_get_time_zone(COMED_TIME_ZONE)
+        if range_time_zone is None:
+            _LOGGER.warning(
+                "Couldn't load the %s time zone, so the 5-minute feed will "
+                "download all 24 hours of prices each time",
+                COMED_TIME_ZONE,
+            )
+    coordinator = ComedPriceCoordinator(
+        hass, async_get_clientsession(hass), api_type, name, range_time_zone
+    )
+    # Without a config entry, polling doesn't stop at shutdown unless asked.
+    await coordinator.async_register_shutdown()
+    # If this fails, the sensors start out unavailable and it keeps trying.
+    await coordinator.async_refresh()
+    return coordinator
 
 
 def parse_newest_price(body: str) -> PriceReading:

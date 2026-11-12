@@ -10,6 +10,7 @@ from homeassistant.config_entries import (
 )
 from homeassistant.const import CONF_NAME, CONF_OFFSET, CONF_TYPE
 from homeassistant.core import callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
@@ -19,6 +20,7 @@ from homeassistant.helpers.selector import (
     SelectSelectorMode,
     TextSelector,
 )
+from homeassistant.util import slugify
 import voluptuous as vol
 
 from .const import CONF_PRICE_UNIT, DOMAIN, FEEDS, default_name
@@ -67,16 +69,40 @@ class ComedHourlyPricingConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Ask which price to show, and how."""
-        if user_input is None:
-            return self.async_show_form(step_id="user", data_schema=USER_SCHEMA)
+        errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {}
+        if user_input is not None:
+            feed = user_input[CONF_TYPE]
+            price_unit = user_input[CONF_PRICE_UNIT]
+            name = user_input.get(CONF_NAME, "").strip() or default_name(
+                feed, price_unit == "dollars"
+            )
+            # Another sensor with this name would push this one's entity ID to
+            # _2, and the two would be hard to tell apart.
+            entity_id = f"sensor.{slugify(name)}"
+            if er.async_get(self.hass).async_is_registered(
+                entity_id
+            ) or self.hass.states.get(entity_id):
+                errors[CONF_NAME] = "name_in_use"
+                placeholders["entity_id"] = entity_id
+            else:
+                return self.async_create_entry(
+                    title=name,
+                    data={
+                        CONF_TYPE: feed,
+                        CONF_PRICE_UNIT: price_unit,
+                        CONF_NAME: name,
+                    },
+                    options={CONF_OFFSET: user_input[CONF_OFFSET]},
+                )
 
-        feed = user_input[CONF_TYPE]
-        price_unit = user_input[CONF_PRICE_UNIT]
-        name = user_input.get(CONF_NAME, "").strip()
-        return self.async_create_entry(
-            title=name or default_name(feed, price_unit == "dollars"),
-            data={CONF_TYPE: feed, CONF_PRICE_UNIT: price_unit},
-            options={CONF_OFFSET: user_input[CONF_OFFSET]},
+        return self.async_show_form(
+            step_id="user",
+            data_schema=self.add_suggested_values_to_schema(
+                USER_SCHEMA, user_input or {}
+            ),
+            errors=errors,
+            description_placeholders=placeholders,
         )
 
     @staticmethod

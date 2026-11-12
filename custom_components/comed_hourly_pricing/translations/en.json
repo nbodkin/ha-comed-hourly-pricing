@@ -17,6 +17,9 @@
           "name": "Leave blank to use the price's name, with \"USD\" added for dollars."
         }
       }
+    },
+    "error": {
+      "name_in_use": "There's already a sensor called {entity_id}. Choose a different name, or first delete that sensor in Settings → Devices & services → Entities."
     }
   },
   "options": {
