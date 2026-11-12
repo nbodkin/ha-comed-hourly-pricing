@@ -2,8 +2,6 @@
 
 # Home Assistant 2026.10 replaced voluptuous with probatio but still answers to
 # the old name for custom integrations, so this works before and after.
-import voluptuous as vol
-
 from homeassistant.components.sensor import (
     PLATFORM_SCHEMA as SENSOR_PLATFORM_SCHEMA,
     SensorEntity,
@@ -17,6 +15,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import slugify
+import voluptuous as vol
 
 from .coordinator import ComedPriceCoordinator
 

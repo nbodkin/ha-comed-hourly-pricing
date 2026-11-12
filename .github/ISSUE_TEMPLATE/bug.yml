@@ -1,0 +1,44 @@
+name: Bug report
+description: Something isn't working right
+body:
+  - type: markdown
+    attributes:
+      value: Please check the [existing issues](https://github.com/nbodkin/ha-comed-hourly-pricing/issues) first, in case someone has already reported it.
+  - type: input
+    attributes:
+      label: Home Assistant version
+      description: Settings → About.
+      placeholder: "2026.11.1"
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Integration version
+      description: HACS → ComEd Hourly Pricing, or `version` in `custom_components/comed_hourly_pricing/manifest.json`.
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: What happened?
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Your configuration
+      description: The `comed_hourly_pricing` part of your `configuration.yaml`.
+      render: yaml
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Debug logs
+      description: |
+        Add this to `configuration.yaml`, restart, wait for the problem, then paste the lines that mention `comed_hourly_pricing` (Settings → System → Logs → Show raw logs).
+        ```yaml
+        logger:
+          logs:
+            custom_components.comed_hourly_pricing: debug
+        ```
+      render: text

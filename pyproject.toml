@@ -3,3 +3,36 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+    "ASYNC", # async pitfalls
+    "B",     # likely bugs
+    "E",     # pycodestyle errors
+    "F",     # pyflakes
+    "FURB",  # modern idioms
+    "I",     # import sorting
+    "PL",    # pylint
+    "PT",    # pytest style
+    "RUF",   # ruff-specific
+    "SIM",   # simplifications
+    "UP",    # pyupgrade
+    "W",     # pycodestyle warnings
+]
+ignore = [
+    "E501",    # line length is handled by the formatter
+    "PLR0913", # pytest fixtures arrive as arguments
+    "PLR0917", # same
+    "PLR2004", # constants in tests are fine
+]
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true
+known-first-party = ["custom_components"]
+combine-as-imports = true
+
+[tool.ruff.lint.flake8-pytest-style]
+fixture-parentheses = false

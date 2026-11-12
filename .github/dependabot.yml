@@ -1,0 +1,12 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  # Keeps the test plugin (and with it the "latest" Home Assistant tested) and
+  # ruff current.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly

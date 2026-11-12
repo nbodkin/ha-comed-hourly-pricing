@@ -5,14 +5,13 @@ import json
 
 import aiohttp
 from freezegun.api import FrozenDateTimeFactory
+from homeassistant.core import HomeAssistant
+from homeassistant.setup import async_setup_component
 import pytest
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 from pytest_homeassistant_custom_component.test_util.aiohttp import (
     AiohttpClientMocker,
 )
-
-from homeassistant.core import HomeAssistant
-from homeassistant.setup import async_setup_component
 
 from custom_components.comed_hourly_pricing.coordinator import (
     API_URL,
@@ -29,7 +28,7 @@ HOUR_AVERAGE_ENTITY = "sensor.comed_current_hour_average_price"
 
 def utc(text: str) -> datetime:
     """Parse an ISO time as UTC."""
-    return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    return datetime.fromisoformat(text)
 
 
 def price_at(stamp: str, price: float) -> str:

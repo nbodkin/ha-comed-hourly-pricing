@@ -1,5 +1,10 @@
 # ComEd Hourly Pricing (custom integration for Home Assistant)
 
+[![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz/docs/faq/custom_repositories/)
+[![Validate](https://github.com/nbodkin/ha-comed-hourly-pricing/actions/workflows/validate.yml/badge.svg)](https://github.com/nbodkin/ha-comed-hourly-pricing/actions/workflows/validate.yml)
+[![Tests](https://github.com/nbodkin/ha-comed-hourly-pricing/actions/workflows/tests.yml/badge.svg)](https://github.com/nbodkin/ha-comed-hourly-pricing/actions/workflows/tests.yml)
+[![License](https://img.shields.io/github/license/nbodkin/ha-comed-hourly-pricing)](LICENSE)
+
 A replacement for Home Assistant's built-in
 [ComEd Hourly Pricing](https://www.home-assistant.io/integrations/comed_hourly_pricing)
 integration. It uses the same domain and YAML, so your existing config and
@@ -23,13 +28,27 @@ Tested on Home Assistant 2026.8.3, 2026.10.4 and 2026.11.1.
 
 ### HACS
 
-1. HACS → ⋮ → **Custom repositories** → add this repo's URL, category **Integration**.
-2. Install **ComEd Hourly Pricing** and restart Home Assistant.
+[![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=nbodkin&repository=ha-comed-hourly-pricing&category=integration)
+
+Click the button above, then **Download**, and restart Home Assistant.
+
+Or by hand:
+
+1. In HACS, open ⋮ → **Custom repositories**.
+2. Add `https://github.com/nbodkin/ha-comed-hourly-pricing` with category **Integration**.
+3. Find **ComEd Hourly Pricing**, click **Download**, and restart Home Assistant.
+
+It isn't in the HACS store's default list, because HACS doesn't list
+integrations that replace a built-in one. Adding it as a custom repository is
+the supported way to install it.
 
 ### Manual
 
-Copy `custom_components/comed_hourly_pricing/` into your Home Assistant
-`config/custom_components/` folder and restart.
+1. Download this repository ([latest release](https://github.com/nbodkin/ha-comed-hourly-pricing/releases/latest),
+   or **Code** → **Download ZIP**).
+2. Copy its `custom_components/comed_hourly_pricing/` folder into the
+   `custom_components/` folder next to your `configuration.yaml`, creating it if needed.
+3. Restart Home Assistant.
 
 After restarting, Home Assistant logs a warning that a custom integration is
 overriding a built-in one. That's expected.
@@ -110,4 +129,18 @@ except that `price_unit` must be removed because the built-in one rejects it.
 python3.14 -m venv .venv && . .venv/bin/activate
 pip install -r requirements_test.txt
 pytest
+ruff check . && ruff format --check .
 ```
+
+GitHub Actions run the same checks on every push and pull request, plus Home
+Assistant's `hassfest` and the HACS validator. Tests run against both the oldest
+supported Home Assistant (2026.8) and the newest the test plugin supports.
+
+To release a version, update `version` in `manifest.json`, then publish a
+GitHub release tagged with the same version (for example `v1.0.1`). HACS shows
+releases as versions users can pick.
+
+## License
+
+[Apache License 2.0](LICENSE), the same license as Home Assistant, whose
+built-in ComEd integration this is based on.
