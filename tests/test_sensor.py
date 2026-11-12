@@ -1,9 +1,12 @@
 """Tests for the ComEd Hourly Pricing sensors."""
 
+import asyncio
 from datetime import timedelta
+from email.utils import format_datetime
 import json
 import logging
 from typing import Any
+from unittest.mock import patch
 
 import aiohttp
 from freezegun.api import FrozenDateTimeFactory
@@ -21,7 +24,9 @@ import pytest
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 from pytest_homeassistant_custom_component.test_util.aiohttp import (
     AiohttpClientMocker,
+    AiohttpClientMockResponse,
 )
+from yarl import URL
 
 from custom_components.comed_hourly_pricing.coordinator import API_URL
 
@@ -53,6 +58,20 @@ def feed(*prices: Any, newest_age: timedelta = timedelta(minutes=5)) -> str:
             for i, price in enumerate(prices)
         ]
     )
+
+
+def cached_copy(age: timedelta) -> dict[str, Any]:
+    """Build a response that was fresh when made, then kept in a cache for `age`.
+
+    Like a real cache, it keeps the original Date and adds an Age header.
+    """
+    return {
+        "text": feed(3.7, newest_age=age + timedelta(minutes=5)),
+        "headers": {
+            "Date": format_datetime(dt_util.utcnow() - age, usegmt=True),
+            "Age": str(int(age.total_seconds())),
+        },
+    }
 
 
 async def setup_sensors(hass: HomeAssistant, *sensors: dict[str, Any]) -> None:
@@ -126,6 +145,73 @@ async def test_dollars(hass: HomeAssistant) -> None:
     assert hass.states.get("sensor.comed_usd_offset").state == "0.047"
 
 
+@pytest.mark.usefixtures("healthy_api")
+async def test_unnamed_dollars_sensor_beside_cents_one(hass: HomeAssistant) -> None:
+    """A dollars sensor's default name differs from the cents one's."""
+    await setup_sensors(hass, FIVE_MINUTE, {**FIVE_MINUTE, "price_unit": "dollars"})
+
+    assert hass.states.get(FIVE_MINUTE_ENTITY).state == "3.7"
+    assert hass.states.get("sensor.comed_5_minute_price_usd").state == "0.037"
+
+
+@pytest.mark.usefixtures("healthy_api")
+async def test_duplicate_name_is_skipped(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Two sensors with one name on one feed: the first is kept, with a clear error."""
+    await setup_sensors(
+        hass, {**FIVE_MINUTE, "offset": 1}, {**FIVE_MINUTE, "offset": 2}
+    )
+
+    assert hass.states.async_entity_ids("sensor") == [FIVE_MINUTE_ENTITY]
+    assert hass.states.get(FIVE_MINUTE_ENTITY).state == "4.7"
+    assert (
+        "Skipping a second five_minute sensor named 'ComEd 5 Minute Price'"
+        in caplog.text
+    )
+    assert "does not generate unique IDs" not in caplog.text
+
+
+@pytest.mark.usefixtures("healthy_api")
+async def test_duplicate_name_across_platform_entries_is_skipped(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The same check covers sensors in separate `platform:` entries."""
+    entry = {"platform": DOMAIN, "monitored_feeds": [FIVE_MINUTE]}
+    assert await async_setup_component(hass, "sensor", {"sensor": [entry, entry]})
+    await hass.async_block_till_done()
+
+    assert hass.states.async_entity_ids("sensor") == [FIVE_MINUTE_ENTITY]
+    assert (
+        "Skipping a second five_minute sensor named 'ComEd 5 Minute Price'"
+        in caplog.text
+    )
+    assert "does not generate unique IDs" not in caplog.text
+
+
+async def test_missing_time_zone_fetches_whole_feed(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    caplog: pytest.LogCaptureFixture,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Without Chicago's time zone, the 5-minute feed is fetched without a range."""
+    aioclient_mock.get(FIVE_MINUTE_URL, text=feed(3.7))
+    with patch(
+        "custom_components.comed_hourly_pricing.sensor.dt_util.async_get_time_zone",
+        return_value=None,
+    ) as get_time_zone:
+        await setup_sensors(hass, FIVE_MINUTE)
+        await next_poll(hass, freezer)
+
+    assert hass.states.get(FIVE_MINUTE_ENTITY).state == "3.7"
+    assert aioclient_mock.call_count == 2
+    for call in aioclient_mock.mock_calls:
+        assert dict(call[1].query) == {"type": "5minutefeed"}
+    get_time_zone.assert_called_once_with("America/Chicago")
+    assert "Couldn't load the America/Chicago time zone" in caplog.text
+
+
 async def test_one_request_per_feed(
     hass: HomeAssistant,
     healthy_api: AiohttpClientMocker,
@@ -142,6 +228,56 @@ async def test_one_request_per_feed(
 
     await next_poll(hass, freezer)
     assert healthy_api.call_count == 4
+
+
+async def test_one_request_per_feed_across_platform_entries(
+    hass: HomeAssistant,
+    healthy_api: AiohttpClientMocker,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Sensors in separate `platform:` entries share a feed's request too."""
+    assert await async_setup_component(
+        hass,
+        "sensor",
+        {
+            "sensor": [
+                {"platform": DOMAIN, "monitored_feeds": [FIVE_MINUTE]},
+                {
+                    "platform": DOMAIN,
+                    "monitored_feeds": [{**FIVE_MINUTE, "price_unit": "dollars"}],
+                },
+            ]
+        },
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(FIVE_MINUTE_ENTITY).state == "3.7"
+    assert hass.states.get("sensor.comed_5_minute_price_usd").state == "0.037"
+    assert healthy_api.call_count == 1
+
+    await next_poll(hass, freezer)
+    assert healthy_api.call_count == 2
+
+
+async def test_feeds_start_at_the_same_time(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Both feeds' first requests run together, so a slow API delays startup once."""
+    both_started = asyncio.Barrier(2)
+
+    async def slow_response(
+        method: str, url: URL, data: Any
+    ) -> AiohttpClientMockResponse:
+        # Times out unless the other feed's request starts meanwhile.
+        async with asyncio.timeout(5):
+            await both_started.wait()
+        return AiohttpClientMockResponse(method, url, text=feed(4.0))
+
+    aioclient_mock.get(FIVE_MINUTE_URL, side_effect=slow_response)
+    aioclient_mock.get(HOUR_AVERAGE_URL, side_effect=slow_response)
+    await setup_sensors(hass, FIVE_MINUTE, HOUR_AVERAGE)
+
+    assert hass.states.get(FIVE_MINUTE_ENTITY).state == "4.0"
+    assert hass.states.get(HOUR_AVERAGE_ENTITY).state == "4.0"
 
 
 async def test_newest_price_wins(
@@ -167,8 +303,17 @@ async def test_newest_price_wins(
         pytest.param({"text": feed("NaN")}, id="nan_price"),
         pytest.param({"text": '[{"price": "3.7"}]'}, id="missing_timestamp"),
         pytest.param(
+            {"text": '[{"millisUTC": "99999999999999999999", "price": "3.7"}]'},
+            id="timestamp_out_of_range",
+        ),
+        pytest.param(
+            {"text": json.dumps([{"millisUTC": "9" * 400, "price": "3.7"}])},
+            id="timestamp_too_big_for_a_float",
+        ),
+        pytest.param(
             {"text": feed(3.7, newest_age=timedelta(minutes=40))}, id="stale_feed"
         ),
+        pytest.param(cached_copy(timedelta(minutes=40)), id="stale_copy_from_a_cache"),
         pytest.param({"status": 503, "text": "Service Unavailable"}, id="http_503"),
         pytest.param(
             {"exc": aiohttp.ClientError("connection reset")}, id="client_error"
@@ -196,6 +341,16 @@ async def test_bad_response_makes_sensor_unavailable(
         for record in caplog.records
         if record.levelno >= logging.ERROR and record.exc_info
     ]
+
+
+async def test_recent_copy_from_a_cache_is_used(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """A cached response that's still recent counts as fresh."""
+    aioclient_mock.get(FIVE_MINUTE_URL, **cached_copy(timedelta(minutes=1)))
+    await setup_sensors(hass, FIVE_MINUTE)
+
+    assert hass.states.get(FIVE_MINUTE_ENTITY).state == "3.7"
 
 
 async def test_outage_and_recovery(

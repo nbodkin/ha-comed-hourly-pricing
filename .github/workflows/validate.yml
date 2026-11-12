@@ -1,7 +1,10 @@
 name: Validate
 
 on:
+  # Other branches are checked when a pull request is opened, so they aren't
+  # checked twice. Run the workflow by hand to check one without a PR.
   push:
+    branches: [main]
   pull_request:
   schedule:
     - cron: "0 0 * * *"
