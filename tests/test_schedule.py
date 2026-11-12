@@ -246,9 +246,9 @@ DATE = "Thu, 12 Nov 2026 01:58:21 GMT"
         pytest.param(None, None, "2026-11-12T03:00:00Z", id="missing"),
         pytest.param("not a date", None, "2026-11-12T03:00:00Z", id="unreadable"),
         pytest.param(DATE, "120", "2026-11-12T02:00:21Z", id="from_a_cache"),
-        pytest.param(DATE, "soon", "2026-11-12T01:58:21Z", id="unreadable_age"),
+        pytest.param(DATE, "soon", "2026-11-12T03:00:00Z", id="unreadable_age"),
         pytest.param(DATE, "-60", "2026-11-12T01:58:21Z", id="negative_age"),
-        pytest.param(DATE, "9" * 30, "2094-11-30T05:12:29Z", id="huge_age"),
+        pytest.param(DATE, "9" * 30, "2026-11-12T03:00:00Z", id="huge_age"),
         pytest.param(None, "120", "2026-11-12T03:00:00Z", id="age_without_date"),
         pytest.param(
             "Fri, 31 Dec 9999 23:59:59 GMT",
@@ -261,7 +261,7 @@ DATE = "Thu, 12 Nov 2026 01:58:21 GMT"
 def test_comed_time(
     freezer: FrozenDateTimeFactory, date: str | None, age: str | None, expected: str
 ) -> None:
-    """ComEd's time is Date plus any Age, or Home Assistant's clock without Date."""
+    """ComEd's time is Date plus any Age, or Home Assistant's clock if unreadable."""
     freezer.move_to("2026-11-12T03:00:00Z")
     assert comed_time(date, age) == utc(expected)
 

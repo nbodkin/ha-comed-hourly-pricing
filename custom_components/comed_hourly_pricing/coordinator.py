@@ -145,33 +145,16 @@ def parse_newest_price(body: str) -> PriceReading:
 def comed_time(date_header: str | None, age_header: str | None = None) -> datetime:
     """Return ComEd's time from a response's Date and Age headers.
 
-    A cache that serves a stored response keeps its original Date and adds an
-    Age header, in seconds since then, so the two together give the current
-    time. Falls back to Home Assistant's clock, read now (after the response),
-    if Date is missing or unreadable.
-    """
-    if date_header:
-        try:
-            parsed = parsedate_to_datetime(date_header)
-            made = parsed.replace(tzinfo=parsed.tzinfo or dt_util.UTC)
-            return made + cache_age(age_header)
-        # OverflowError: a Date near the year 9999 plus a large Age.
-        except TypeError, ValueError, OverflowError:
-            pass
-    return dt_util.utcnow()
-
-
-def cache_age(age_header: str | None) -> timedelta:
-    """Return how long a response was stored in a cache, from its Age header.
-
-    An unreadable or negative Age counts as none.
+    A cache that serves a stored response keeps its original Date and adds Age,
+    the seconds since then. Falls back to Home Assistant's clock, read now
+    (after the response), if Date is missing or either header can't be read.
     """
     try:
-        seconds = int(age_header or 0)
-    except ValueError:
-        return timedelta(0)
-    # RFC 9111 says to treat an Age too large to handle as 2**31 seconds.
-    return timedelta(seconds=min(max(seconds, 0), 2**31))
+        made = parsedate_to_datetime(date_header)
+        age = timedelta(seconds=max(int(age_header or 0), 0))
+        return made.replace(tzinfo=made.tzinfo or dt_util.UTC) + age
+    except TypeError, ValueError, OverflowError:
+        return dt_util.utcnow()
 
 
 def next_poll_delay(price_time: datetime, now: datetime) -> timedelta:
