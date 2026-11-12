@@ -1,10 +1,10 @@
 {
   "domain": "comed_hourly_pricing",
   "name": "ComEd Hourly Pricing",
-  "codeowners": ["@YOUR_GITHUB_USERNAME"],
-  "documentation": "https://github.com/YOUR_GITHUB_USERNAME/ha-comed-hourly-pricing",
+  "codeowners": ["@nbodkin"],
+  "documentation": "https://github.com/nbodkin/ha-comed-hourly-pricing",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/YOUR_GITHUB_USERNAME/ha-comed-hourly-pricing/issues",
+  "issue_tracker": "https://github.com/nbodkin/ha-comed-hourly-pricing/issues",
   "requirements": [],
   "version": "1.0.0"
 }
