@@ -21,6 +21,7 @@ entity IDs keep working, and fixes how it handles errors:
 | Downloads 24 hours of 5-minute prices (about 12 KB) on every poll. | Asks for just a few hours (about 1 KB). |
 | Prices only in ¢/kWh, which the Energy dashboard reads as **dollars** (costs 100× too high). | Optional `price_unit: dollars` for the Energy dashboard. |
 | No long-term statistics; can't be renamed in the UI. | `state_class: measurement` and a unique ID. |
+| Set up only in YAML. | Set up [in the UI](#in-the-ui) or in YAML. |
 
 Tested on Home Assistant 2026.8.3, 2026.10.4 and 2026.11.1.
 
@@ -55,6 +56,27 @@ overriding a built-in one. That's expected.
 
 ## Configure
 
+Set up sensors in the UI or in YAML. Sensors on the same price share one
+request, whichever way they were added.
+
+### In the UI
+
+[![Open your Home Assistant instance and start setting up ComEd Hourly Pricing.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=comed_hourly_pricing)
+
+Or go to **Settings → Devices & services → Add integration** and search for
+**ComEd Hourly Pricing**. Choose:
+
+- **Price:** the 5-minute price or the current hour average.
+- **Unit:** cents or dollars per kWh. Use dollars for the [Energy dashboard](#energy-dashboard).
+- **Offset:** added to every price, in ¢/kWh (see `offset` below).
+- **Name:** optional. Leave it blank for the same names as YAML's defaults.
+
+Each sensor is its own entry, so add the integration again for each one you
+want. To change a sensor's offset later, click **Configure** on its entry.
+To change its price or unit, add a new sensor and delete the old one.
+
+### In YAML
+
 Same YAML as the built-in integration. `price_unit` is new.
 
 ```yaml
@@ -79,7 +101,7 @@ sensor:
 
 ### Energy dashboard
 
-Use a sensor with `price_unit: dollars` as the price entity.
+Use a sensor in dollars (**Unit: Dollars per kWh** in the UI, `price_unit: dollars` in YAML) as the price entity.
 The Energy dashboard ignores the currency in a price's unit and treats the number as your
 system currency per kWh, so a ¢/kWh sensor makes every cost 100× too high.
 Keep your existing cents sensors for automations if you like. Each sensor is independent.
@@ -125,12 +147,15 @@ names its sensors `sensor.comed_5_minute_price_2` and so on, which breaks
 automations. Renaming them in the UI can't fix that, because the built-in
 integration doesn't give its sensors unique IDs. So:
 
-1. Remove the `comed_hourly_pricing` sensors from `configuration.yaml`, delete
+1. Delete any sensors you added in the UI: in **Settings → Devices & services →
+   ComEd Hourly Pricing**, delete each entry. The built-in integration can't be
+   set up in the UI, so it can't use them.
+2. Remove the `comed_hourly_pricing` sensors from `configuration.yaml`, delete
    `custom_components/comed_hourly_pricing/` (or uninstall in HACS), and restart.
-2. In **Settings → Devices & services → Entities**, search for `comed`, select
+3. In **Settings → Devices & services → Entities**, search for `comed`, select
    the old sensors, and delete them.
-3. Put the YAML back, without `price_unit` (the built-in integration rejects
-   it), and restart.
+4. Set up the built-in integration in YAML (without `price_unit`, which it
+   rejects) and restart.
 
 ## Development
 

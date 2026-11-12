@@ -1,0 +1,50 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add a ComEd price sensor",
+        "description": "Each sensor shows one ComEd price. For more, such as both prices, or one in cents and one in dollars, add the integration again.",
+        "data": {
+          "type": "Price",
+          "price_unit": "Unit",
+          "offset": "Offset",
+          "name": "Name"
+        },
+        "data_description": {
+          "type": "The 5-minute price changes every 5 minutes. The current hour average is the average of this hour's 5-minute prices so far.",
+          "price_unit": "Choose dollars for the Energy dashboard. It reads ¢/kWh as dollars, so cents would make every cost 100 times too high.",
+          "offset": "Added to every price, in ¢/kWh even when the unit is dollars. ComEd's prices are for supply only, so this is where delivery charges and other per-kWh fees go.",
+          "name": "Leave blank to use the price's name, with \"USD\" added for dollars."
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Change the offset",
+        "description": "To change the price or the unit, add a new sensor instead.",
+        "data": {
+          "offset": "Offset"
+        },
+        "data_description": {
+          "offset": "Added to every price, in ¢/kWh even when the unit is dollars."
+        }
+      }
+    }
+  },
+  "selector": {
+    "feed": {
+      "options": {
+        "five_minute": "5-minute price",
+        "current_hour_average": "Current hour average"
+      }
+    },
+    "price_unit": {
+      "options": {
+        "cents": "Cents per kWh (¢/kWh)",
+        "dollars": "Dollars per kWh (USD/kWh)"
+      }
+    }
+  }
+}
