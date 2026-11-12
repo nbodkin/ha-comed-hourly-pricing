@@ -122,7 +122,8 @@ logger:
 Home Assistant keeps a record of each sensor this integration created. If you
 just uninstall it, the built-in integration finds those entity IDs taken and
 names its sensors `sensor.comed_5_minute_price_2` and so on, which breaks
-automations, and the built-in sensors can't be renamed in the UI. So:
+automations. Renaming them in the UI can't fix that, because the built-in
+integration doesn't give its sensors unique IDs. So:
 
 1. Remove the `comed_hourly_pricing` sensors from `configuration.yaml`, delete
    `custom_components/comed_hourly_pricing/` (or uninstall in HACS), and restart.

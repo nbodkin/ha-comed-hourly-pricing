@@ -3,6 +3,7 @@
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from email.utils import parsedate_to_datetime
 import logging
 import math
 from zoneinfo import ZoneInfo
@@ -30,8 +31,10 @@ LATE_RETRY_WINDOW = timedelta(minutes=5)
 MAX_PRICE_AGE = timedelta(minutes=30)
 
 # Without a time range, the 5-minute feed returns 24 hours of prices (about
-# 12 KB). The range is in Chicago time, and wide enough that it still includes
-# the newest price if ComEd reads it an hour off around daylight saving changes.
+# 12 KB). The range is in ComEd's local time, and wide enough that it still
+# includes the newest price if ComEd reads it an hour off around daylight
+# saving changes.
+COMED_TIME_ZONE = "America/Chicago"
 RANGE_BEFORE_NOW = timedelta(hours=2)
 RANGE_AFTER_NOW = timedelta(hours=1)
 
@@ -57,8 +60,13 @@ class ComedPriceCoordinator(DataUpdateCoordinator[PriceReading]):
         session: aiohttp.ClientSession,
         api_type: str,
         name: str,
+        range_time_zone: ZoneInfo | None = None,
     ) -> None:
-        """Set up fetching for one feed."""
+        """Set up fetching for one feed.
+
+        With range_time_zone, requests ask for a few hours of prices around now,
+        in that zone, instead of everything ComEd returns.
+        """
         super().__init__(
             hass,
             _LOGGER,
@@ -68,7 +76,7 @@ class ComedPriceCoordinator(DataUpdateCoordinator[PriceReading]):
         )
         self._session = session
         self._api_type = api_type
-        self._chicago: ZoneInfo | None = None
+        self._range_time_zone = range_time_zone
 
     async def _async_update_data(self) -> PriceReading:
         """Fetch the newest price, or raise UpdateFailed."""
@@ -76,11 +84,8 @@ class ComedPriceCoordinator(DataUpdateCoordinator[PriceReading]):
         self.update_interval = PUBLISH_INTERVAL
 
         params = {"type": self._api_type}
-        if self._api_type == "5minutefeed":
-            # Loading a time zone can read from disk, so it's done once and kept.
-            if self._chicago is None:
-                self._chicago = await dt_util.async_get_time_zone("America/Chicago")
-            local = dt_util.now(self._chicago)
+        if self._range_time_zone is not None:
+            local = dt_util.now(self._range_time_zone)
             params["datestart"] = f"{local - RANGE_BEFORE_NOW:%Y%m%d%H%M}"
             params["dateend"] = f"{local + RANGE_AFTER_NOW:%Y%m%d%H%M}"
 
@@ -91,12 +96,14 @@ class ComedPriceCoordinator(DataUpdateCoordinator[PriceReading]):
             ):
                 response.raise_for_status()
                 body = await response.text()
+                date_header = response.headers.get("Date")
         except (TimeoutError, aiohttp.ClientError) as err:
             raise UpdateFailed(f"can't reach the ComEd API: {err!r}") from err
 
         reading = parse_newest_price(body)
-        # Read after the response, so a slow one doesn't push back the next check.
-        now = dt_util.utcnow()
+        # Compared with ComEd's clock, not Home Assistant's, so the stale check
+        # and the schedule both work even if Home Assistant's clock is off.
+        now = comed_time(date_header)
         if now - reading.time > MAX_PRICE_AGE:
             raise UpdateFailed(
                 f"the newest ComEd price is from {reading.time}; "
@@ -134,6 +141,22 @@ def parse_newest_price(body: str) -> PriceReading:
     return PriceReading(price, time)
 
 
+def comed_time(date_header: str | None) -> datetime:
+    """Return ComEd's time from a response's Date header.
+
+    Falls back to Home Assistant's clock, read now (after the response), if the
+    header is missing or unreadable.
+    """
+    if date_header:
+        try:
+            parsed = parsedate_to_datetime(date_header)
+        except TypeError, ValueError:
+            pass
+        else:
+            return parsed.replace(tzinfo=parsed.tzinfo or dt_util.UTC)
+    return dt_util.utcnow()
+
+
 def next_poll_delay(price_time: datetime, now: datetime) -> timedelta:
     """Return how long to wait before checking for the price after price_time.
 
@@ -142,8 +165,8 @@ def next_poll_delay(price_time: datetime, now: datetime) -> timedelta:
     """
     late_by = now - (price_time + PUBLISH_INTERVAL + POSTING_DELAY)
     if late_by < timedelta(0):
-        # A price stamped after now (Home Assistant's clock is behind, say)
-        # would otherwise put off the next check, and the stale check, by as
-        # long as the clock is off.
+        # A price stamped after now would otherwise put off the next check by
+        # however far ahead it is. That can only happen if a response had no
+        # Date header and Home Assistant's clock is behind ComEd's.
         return min(-late_by, PUBLISH_INTERVAL + POSTING_DELAY)
     return LATE_RETRY_INTERVAL if late_by < LATE_RETRY_WINDOW else PUBLISH_INTERVAL

@@ -5,6 +5,7 @@ from datetime import timedelta
 import json
 import logging
 from typing import Any
+from unittest.mock import patch
 
 import aiohttp
 from freezegun.api import FrozenDateTimeFactory
@@ -154,6 +155,46 @@ async def test_duplicate_name_is_skipped(
         in caplog.text
     )
     assert "does not generate unique IDs" not in caplog.text
+
+
+@pytest.mark.usefixtures("healthy_api")
+async def test_duplicate_name_across_platform_entries_is_skipped(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The same check covers sensors in separate `platform:` entries."""
+    entry = {"platform": DOMAIN, "monitored_feeds": [FIVE_MINUTE]}
+    assert await async_setup_component(hass, "sensor", {"sensor": [entry, entry]})
+    await hass.async_block_till_done()
+
+    assert hass.states.async_entity_ids("sensor") == [FIVE_MINUTE_ENTITY]
+    assert (
+        "Skipping a second five_minute sensor named 'ComEd 5 Minute Price'"
+        in caplog.text
+    )
+    assert "does not generate unique IDs" not in caplog.text
+
+
+async def test_missing_time_zone_fetches_whole_feed(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    caplog: pytest.LogCaptureFixture,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Without Chicago's time zone, the 5-minute feed is fetched without a range."""
+    aioclient_mock.get(FIVE_MINUTE_URL, text=feed(3.7))
+    with patch(
+        "custom_components.comed_hourly_pricing.sensor.dt_util.async_get_time_zone",
+        return_value=None,
+    ) as get_time_zone:
+        await setup_sensors(hass, FIVE_MINUTE)
+        await next_poll(hass, freezer)
+
+    assert hass.states.get(FIVE_MINUTE_ENTITY).state == "3.7"
+    assert aioclient_mock.call_count == 2
+    for call in aioclient_mock.mock_calls:
+        assert dict(call[1].query) == {"type": "5minutefeed"}
+    get_time_zone.assert_called_once_with("America/Chicago")
+    assert "Couldn't load the America/Chicago time zone" in caplog.text
 
 
 async def test_one_request_per_feed(

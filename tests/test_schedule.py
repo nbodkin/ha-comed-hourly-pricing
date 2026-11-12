@@ -1,6 +1,7 @@
 """Tests for when the integration checks for new prices, and what it asks for."""
 
 from datetime import datetime, timedelta
+from email.utils import format_datetime
 import json
 from typing import Any
 
@@ -9,6 +10,7 @@ from freezegun.api import FrozenDateTimeFactory
 from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
+from homeassistant.util import dt as dt_util
 import pytest
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 from pytest_homeassistant_custom_component.test_util.aiohttp import (
@@ -22,6 +24,7 @@ from custom_components.comed_hourly_pricing.coordinator import (
     LATE_RETRY_INTERVAL,
     POSTING_DELAY,
     PUBLISH_INTERVAL,
+    comed_time,
     next_poll_delay,
 )
 
@@ -212,7 +215,7 @@ async def test_clock_behind_still_checks(
     aioclient_mock: AiohttpClientMocker,
     freezer: FrozenDateTimeFactory,
 ) -> None:
-    """If Home Assistant's clock is behind ComEd's, an outage still shows up."""
+    """Without a Date header, an outage still shows up if the clock is behind."""
     start = utc("2026-11-11T23:37:00Z")
     freezer.move_to(start)
     aioclient_mock.get(HOUR_AVERAGE_URL, text=price_at("2026-11-12T01:30:00Z", 5.2))
@@ -224,4 +227,121 @@ async def test_clock_behind_still_checks(
     longest_wait = PUBLISH_INTERVAL + POSTING_DELAY
     await advance_to(hass, freezer, start + longest_wait + timedelta(seconds=1))
     assert aioclient_mock.call_count == 1
+    assert hass.states.get(HOUR_AVERAGE_ENTITY).state == STATE_UNAVAILABLE
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        pytest.param("Thu, 12 Nov 2026 01:58:21 GMT", "2026-11-12T01:58:21Z", id="gmt"),
+        pytest.param(
+            "Thu, 12 Nov 2026 01:58:21 -0000", "2026-11-12T01:58:21Z", id="no_zone"
+        ),
+        pytest.param(None, "2026-11-12T03:00:00Z", id="missing"),
+        pytest.param("not a date", "2026-11-12T03:00:00Z", id="unreadable"),
+    ],
+)
+def test_comed_time(
+    freezer: FrozenDateTimeFactory, header: str | None, expected: str
+) -> None:
+    """ComEd's time comes from the Date header, or Home Assistant's clock without one."""
+    freezer.move_to("2026-11-12T03:00:00Z")
+    assert comed_time(header) == utc(expected)
+
+
+# Measured: each price appears 5:17 after its timestamp.
+POSTED_AFTER = timedelta(minutes=5, seconds=17)
+SKEWS = pytest.mark.parametrize(
+    "skew",
+    [timedelta(0), timedelta(hours=2), -timedelta(minutes=35)],
+    ids=["clock_right", "clock_2h_behind", "clock_35min_ahead"],
+)
+
+
+def newest_stamp(comed_now: datetime) -> datetime:
+    """Return the timestamp of the newest price ComEd has posted."""
+    posted = comed_now - POSTED_AFTER
+    return posted.replace(
+        minute=posted.minute - posted.minute % 5, second=0, microsecond=0
+    )
+
+
+def simulated_comed(
+    skew: timedelta, stops_at: datetime | None = None
+) -> tuple[Any, list[datetime]]:
+    """Return a mock of ComEd's hour-average feed, and the timestamps it served.
+
+    ComEd's clock is Home Assistant's plus `skew`. It posts a price every 5
+    minutes, 5:17 after each timestamp, and puts its time in a Date header.
+    With `stops_at`, it posts nothing newer than that.
+    """
+    served: list[datetime] = []
+
+    async def respond(method: str, url: URL, data: Any) -> AiohttpClientMockResponse:
+        comed_now = dt_util.utcnow() + skew
+        stamp = newest_stamp(comed_now)
+        if stops_at is not None:
+            stamp = min(stamp, stops_at)
+        served.append(stamp)
+        body = price_at(stamp.isoformat(), stamp.minute / 10)
+        return AiohttpClientMockResponse(
+            method,
+            url,
+            text=body,
+            headers={"Date": format_datetime(comed_now, usegmt=True)},
+        )
+
+    return respond, served
+
+
+async def run_for(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, duration: timedelta
+) -> None:
+    """Let time pass in 20-second steps, running whatever comes due."""
+    end = dt_util.utcnow() + duration
+    while dt_util.utcnow() < end:
+        freezer.tick(timedelta(seconds=20))
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+
+
+@SKEWS
+async def test_every_price_once_whatever_the_clock(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    freezer: FrozenDateTimeFactory,
+    skew: timedelta,
+) -> None:
+    """However far off Home Assistant's clock is, each price is fetched once."""
+    freezer.move_to("2026-11-11T23:37:00Z")
+    respond, served = simulated_comed(skew)
+    aioclient_mock.get(HOUR_AVERAGE_URL, side_effect=respond)
+    await setup_feed(hass, "current_hour_average")
+    await run_for(hass, freezer, timedelta(hours=1))
+
+    # The price at startup, then the 12 posted during the hour, each with one
+    # request: none missed, none fetched before it was posted.
+    assert len(set(served)) == 13
+    assert len(served) == 13
+    assert hass.states.get(HOUR_AVERAGE_ENTITY).state != STATE_UNAVAILABLE
+
+
+@SKEWS
+async def test_stalled_feed_goes_unavailable_whatever_the_clock(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    freezer: FrozenDateTimeFactory,
+    skew: timedelta,
+) -> None:
+    """However far off Home Assistant's clock is, a stalled feed is caught."""
+    start = utc("2026-11-11T23:37:00Z")
+    freezer.move_to(start)
+    respond, _ = simulated_comed(skew, stops_at=newest_stamp(start + skew))
+    aioclient_mock.get(HOUR_AVERAGE_URL, side_effect=respond)
+    await setup_feed(hass, "current_hour_average")
+    assert hass.states.get(HOUR_AVERAGE_ENTITY).state != STATE_UNAVAILABLE
+
+    # The last price is stamped 7 minutes before startup, so it's 30 minutes
+    # old 23 minutes in. Allow for the 5-minute checks once it's late.
+    await run_for(hass, freezer, timedelta(minutes=30))
     assert hass.states.get(HOUR_AVERAGE_ENTITY).state == STATE_UNAVAILABLE
